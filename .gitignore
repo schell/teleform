@@ -4,3 +4,6 @@ Cargo.lock
 flamegraph.svg
 .#*
 .DS_Store
+store.json
+default_store.json
+infrastructure.json

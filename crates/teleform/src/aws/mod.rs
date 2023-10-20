@@ -11,6 +11,7 @@ pub async fn prune<'a: 'b, 'b>(
     store: &'b mut crate::Store<&'a SdkConfig>
 ) -> anyhow::Result<()> {
     store.prune::<apigatewayv2::Route>().await?;
+    store.prune::<apigatewayv2::Stage>().await?;
     store.prune::<apigatewayv2::Integration>().await?;
     store.prune::<apigatewayv2::ApiGatewayV2>().await?;
     store.prune::<dynamodb::Table>().await?;
