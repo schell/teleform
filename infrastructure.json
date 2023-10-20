@@ -1,0 +1,107 @@
+{
+  "lambda_policy": {
+    "document": {
+      "Statement": [
+        {
+          "Action": [
+            "dynamodb:DeleteItem",
+            "dynamodb:GetItem",
+            "dynamodb:PutItem",
+            "dynamodb:Query",
+            "dynamodb:Scan",
+            "dynamodb:UpdateItem"
+          ],
+          "Effect": "Allow",
+          "Resource": "*",
+          "Sid": "Stmt1428341300017"
+        },
+        {
+          "Action": [
+            "logs:CreateLogGroup",
+            "logs:CreateLogStream",
+            "logs:PutLogEvents"
+          ],
+          "Effect": "Allow",
+          "Resource": "*",
+          "Sid": ""
+        }
+      ],
+      "Version": "2012-10-17"
+    },
+    "arn": "arn:aws:iam::428651493886:policy/lambda-apigateway-policy"
+  },
+  "lambda_role": {
+    "document": {
+      "Statement": [
+        {
+          "Action": [
+            "sts:AssumeRole"
+          ],
+          "Effect": "Allow",
+          "Principal": {
+            "Service": [
+              "lambda.amazonaws.com"
+            ]
+          }
+        }
+      ],
+      "Version": "2012-10-17"
+    },
+    "attached_policy_arn": "arn:aws:iam::428651493886:policy/lambda-apigateway-policy",
+    "arn": "arn:aws:iam::428651493886:role/lambda-apigateway-role"
+  },
+  "lambda": {
+    "name": "teleform-example-lambda",
+    "role_arn": "arn:aws:iam::428651493886:role/lambda-apigateway-role",
+    "handler": "bootstrap",
+    "zip_file_path": "target/lambda/example-lambda/bootstrap.zip",
+    "zip_file_hash": "3AAE81928E3649CA973315B51469F13D6D1303B92344E1C514B056B700DC99B0",
+    "architecture": "arm64",
+    "arn": "arn:aws:lambda:us-west-2:428651493886:function:teleform-example-lambda",
+    "version": "1"
+  },
+  "dydb_table": {
+    "table_name": "crud-table",
+    "table_class": "Standard",
+    "key_schema": [
+      {
+        "attribute_name": "id",
+        "key_type": "Hash",
+        "attribute_type": "String"
+      }
+    ],
+    "billing_mode": "PayPerRequest",
+    "arn": "arn:aws:dynamodb:us-west-2:428651493886:table/crud-table",
+    "id": "426cbaed-05d5-40a1-923f-289c310f5833"
+  },
+  "apigateway": {
+    "target_lambda_arn": null,
+    "protocol": "Http",
+    "api_id": "p1u5k503qa",
+    "api_endpoint": "https://p1u5k503qa.execute-api.us-west-2.amazonaws.com"
+  },
+  "stage": {
+    "api_id": "p1u5k503qa",
+    "stage_name": "$default",
+    "auto_deploy": true
+  },
+  "apigateway_lambda_perm": {
+    "function_arn": "arn:aws:lambda:us-west-2:428651493886:function:teleform-example-lambda:1",
+    "statement_id": null,
+    "action": "lambda:InvokeFunction",
+    "principal": "apigateway.amazonaws.com",
+    "source_arn": "arn:aws:execute-api:us-west-2:428651493886:p1u5k503qa/*/*/*"
+  },
+  "integration": {
+    "api_id": "p1u5k503qa",
+    "integration_uri": "arn:aws:lambda:us-west-2:428651493886:function:teleform-example-lambda:1",
+    "integration_type": "AwsProxy",
+    "integration_id": "parirft"
+  },
+  "catchall_route": {
+    "api_id": "p1u5k503qa",
+    "route_key": "ANY /{proxy+}",
+    "target": "integrations/parirft",
+    "route_id": "g9b5xvs"
+  }
+}

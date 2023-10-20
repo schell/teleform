@@ -334,3 +334,71 @@ async fn delete_route(
     }
     Ok(())
 }
+
+#[derive(TeleSync, Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
+#[tele(helper = &'a SdkConfig)]
+#[tele(create = create_stage, update = update_stage, delete = delete_stage)]
+pub struct Stage {
+    #[tele(should_recreate)]
+    pub api_id: Remote<String>,
+    pub stage_name: Local<String>,
+    pub auto_deploy: Local<bool>,
+}
+
+async fn create_stage(
+    stage: &mut Stage,
+    apply: bool,
+    cfg: &SdkConfig,
+    _name: &str,
+) -> anyhow::Result<()> {
+    if apply {
+        let client = aws_sdk_apigatewayv2::Client::new(cfg);
+        let _ = client
+            .create_stage()
+            .api_id(stage.api_id.maybe_ref().context("cannot create stage - missing api_id")?)
+            .stage_name(stage.stage_name.as_str())
+            .auto_deploy(*stage.auto_deploy.as_ref())
+            .send()
+            .await?;
+    }
+    Ok(())
+}
+
+async fn update_stage(
+    stage: &mut Stage,
+    apply: bool,
+    cfg: &SdkConfig,
+    _name: &str,
+    _previous: &Stage,
+) -> anyhow::Result<()> {
+    if apply {
+        let client = aws_sdk_apigatewayv2::Client::new(cfg);
+        client
+            .update_stage()
+            .api_id(stage.api_id.maybe_ref().context("cannot update stage - missing api_id")?)
+            .stage_name(stage.stage_name.as_str())
+            .auto_deploy(*stage.auto_deploy)
+            .send()
+            .await?;
+    }
+
+    Ok(())
+}
+
+async fn delete_stage(
+    stage: &Stage,
+    apply: bool,
+    cfg: &SdkConfig,
+    _name: &str,
+) -> anyhow::Result<()> {
+    if apply {
+        let client = aws_sdk_apigatewayv2::Client::new(cfg);
+        let _ = client
+            .delete_stage()
+            .api_id(stage.api_id.maybe_ref().context("cannot delete stage - missing api_id")?)
+            .stage_name(stage.stage_name.as_str())
+            .send()
+            .await?;
+    }
+    Ok(())
+}

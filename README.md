@@ -2,11 +2,37 @@
 
 # teleform
 
+[See the example](crates/example/src/main.rs).
+
 ## what
 
 Infrastructure-as-code like `terraform`, but in a Rust library. This makes
 it easy to integrate infrastructure setup and teardown into your project's
 xtask.
+
+### building and running the example
+
+First build the example lambda using [cargo lambda](https://www.cargo-lambda.info/):
+```
+cargo lambda build --release --arm64 --output-format zip
+```
+
+Then run the example program with your AWS account id:
+```
+cargo run -p example -vvv --account-id xxxxxxxxxxxx
+```
+
+When you're ready to apply the changes (building all infrastructure):
+```
+cargo run -p example -vvv --account-id xxxxxxxxxxxx --apply
+```
+
+That should print out a url where you can play with your stack.
+
+When you're ready to tear it all down run:
+```
+cargo run -p example -vvv --account-id xxxxxxxxxxxx --apply --delete
+```
 
 ## why
 
@@ -20,10 +46,10 @@ have a chip on their shoulder about `terraform`.
 
 The trait `TeleSync` allows you to write `create`, `update`, and `delete`
 implementations for resources. It also specifies how resources are
-`composite`d from the IaC definition and the store file, as well as what
-fields cause recreations (`should_recreate`) and updates (`should_update`).
-The `teleform-derive` crate provides a derive macro and attributes that
-make implementing this trait pretty easy for new resources.
+`composite`d from the IaC definition (aka your code) and the store file, as well
+as what fields cause recreations (`should_recreate`) and updates
+(`should_update`). The `teleform-derive` crate provides a derive macro and
+attributes that make implementing this trait pretty easy for new resources.
 
 ### resources
 
@@ -58,4 +84,4 @@ your infrastructure.
 ## alpha
 
 This software is super-alpha! It pretty much works, but I wouldn't base your corp
-on it, unless you're a computer cowboy like me.
+on it, unless you're a computer cowboy like me. Yeehaw!
