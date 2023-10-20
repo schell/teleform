@@ -190,9 +190,9 @@ impl<T> Remote<T> {
 /// Synchronize an IaC definition with a stored type, mutating infrastructure to match.
 pub trait TeleSync
 where
-    Self: serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + Clone,
+    Self: serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug,
 {
-    type Provider<'a>: Clone;
+    type Provider;
 
     fn composite(self, other: Self) -> Self;
 
@@ -200,33 +200,27 @@ where
 
     fn should_update(&self, other: &Self) -> bool;
 
-    fn create<'ctx, 'a>(
+    fn create<'a>(
         &'a mut self,
         apply: bool,
-        helper: Self::Provider<'ctx>,
+        helper: &'a Self::Provider,
         name: &'a str,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + 'a>>
-    where
-        'ctx: 'a;
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + 'a>>;
 
-    fn update<'ctx, 'a>(
+    fn update<'a>(
         &'a mut self,
         apply: bool,
-        helper: Self::Provider<'ctx>,
+        helper: &'a Self::Provider,
         name: &'a str,
         previous: &'a Self,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + 'a>>
-    where
-        'ctx: 'a;
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + 'a>>;
 
-    fn delete<'ctx, 'a>(
+    fn delete<'a>(
         &'a self,
         apply: bool,
-        helper: Self::Provider<'ctx>,
+        helper: &'a Self::Provider,
         name: &'a str,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + 'a>>
-    where
-        'ctx: 'a;
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + 'a>>;
 }
 
 /// An IaC store.
@@ -238,7 +232,29 @@ pub struct Store<Config> {
     rez: BTreeMap<String, Rez>,
 }
 
-impl<Config: Clone> Store<Config> {
+impl<Config> Store<Config> {
+    /// Insert an IaC resource into the store.
+    ///
+    /// This is useful for adding resources created outside of teleform.
+    pub fn insert<'a, Data>(
+        &mut self,
+        name: impl Into<String>,
+        data: Data
+    ) -> anyhow::Result<()>
+    where
+        Config: AsRef<<Data as TeleSync>::Provider>,
+        Data: std::any::Any + TeleSync,
+    {
+        let name = name.into();
+        let json = serde_json::to_string_pretty(&data)?;
+        log::info!("inserting {name}:\n{json}");
+        let entry = self.rez.entry(name).or_default();
+        entry.type_is = Some(std::any::type_name::<Data>().to_string());
+        entry.data = serde_json::to_value(&data)?;
+        entry.use_count += 1;
+        Ok(())
+    }
+
     /// Synchronize a singular IaC resource.
     pub async fn sync<'a, Data>(
         &mut self,
@@ -246,9 +262,11 @@ impl<Config: Clone> Store<Config> {
         mut data: Data,
     ) -> anyhow::Result<Data>
     where
-        Data: std::any::Any + TeleSync<Provider<'a> = Config>,
+        Config: AsRef<<Data as TeleSync>::Provider>,
+        Data: std::any::Any + TeleSync + Clone,
     {
         let name = name.into();
+        let provider: &Data::Provider = self.cfg.as_ref();
         log::trace!("sync'ing {name}");
         if let Some(existing) = self.rez.get_mut(&name) {
             let existing_data: Data = serde_json::from_value(existing.data.clone())
@@ -266,18 +284,18 @@ impl<Config: Clone> Store<Config> {
             if existing_data.should_recreate(&data) {
                 log::info!("recreating {name}:\n{comparison}");
                 log::info!("deleting {name}");
-                data.delete(self.apply, self.cfg.clone(), &name).await?;
+                data.delete(self.apply, provider, &name).await?;
                 if self.apply {
                     log::info!("...deleted");
                 }
                 log::info!("creating {name}");
-                data.create(self.apply, self.cfg.clone(), &name).await?;
+                data.create(self.apply, provider, &name).await?;
                 if self.apply {
                     log::info!("...created");
                 }
             } else if existing_data.should_update(&data) {
                 log::info!("updating {name}:\n{comparison}");
-                data.update(self.apply, self.cfg.clone(), &name, &existing_data)
+                data.update(self.apply, provider, &name, &existing_data)
                     .await?;
                 if self.apply {
                     log::info!("...updated");
@@ -294,7 +312,7 @@ impl<Config: Clone> Store<Config> {
                 "creating {name}:\n{}",
                 serde_json::to_string_pretty(&data).context("json")?
             );
-            data.create(self.apply, self.cfg.clone(), &name).await?;
+            data.create(self.apply, provider, &name).await?;
             if self.apply {
                 log::info!(
                     "...created\n{}",
@@ -349,9 +367,10 @@ impl<Config: Clone> Store<Config> {
             .collect::<Vec<_>>()
     }
 
-    pub async fn prune<'a, Data>(&mut self) -> anyhow::Result<()>
+    pub async fn prune<Data>(&mut self) -> anyhow::Result<()>
     where
-        Data: TeleSync<Provider<'a> = Config>,
+        Config: AsRef<Data::Provider>,
+        Data: TeleSync,
     {
         let to_prune = self.get_prunes();
         if !to_prune.is_empty() {
@@ -371,7 +390,7 @@ impl<Config: Clone> Store<Config> {
                 match serde_json::from_value::<Data>(rez.data.clone()) {
                     Ok(data) => {
                         if self.apply {
-                            data.delete(self.apply, self.cfg.clone(), &name).await?;
+                            data.delete(self.apply, self.cfg.as_ref(), &name).await?;
                             self.save(&self.path)?;
                             log::info!("...deleted");
                         }
@@ -389,12 +408,13 @@ impl<Config: Clone> Store<Config> {
     /// Delete the resource with the given name, if any.
     pub async fn _delete<Data>(&mut self, name: impl Into<String>) -> anyhow::Result<()>
     where
-        Data: for<'a> TeleSync<Provider<'a> = Config>,
+        Config: AsRef<Data::Provider>,
+        Data: TeleSync,
     {
         let name = name.into();
         if let Some(rez) = self.rez.remove(&name) {
             let data: Data = serde_json::from_value(rez.data)?;
-            data.delete(self.apply, self.cfg.clone(), &name).await?;
+            data.delete(self.apply, self.cfg.as_ref(), &name).await?;
         } else {
             log::warn!("cannot delete {name} - no such resource");
         }
@@ -431,7 +451,7 @@ pub mod cli {
     }
 
     /// Create the infrastructure store, backed by a local file.
-    pub fn create_store<Cfg: Clone>(
+    pub fn create_store<Cfg>(
         store_path: impl AsRef<std::path::Path>,
         backup_store_path: impl AsRef<std::path::Path>,
         cfg: Cfg,
@@ -456,7 +476,7 @@ pub mod cli {
 
     /// Display any resources that should be pruned.
     /// Return whether there are resources to prune.
-    pub fn display_prunes<Cfg: Clone>(store: &Store<Cfg>) -> bool {
+    pub fn display_prunes<Cfg>(store: &Store<Cfg>) -> bool {
         let unused_resources = store.get_prunes();
         if !unused_resources.is_empty() {
             log::warn!(

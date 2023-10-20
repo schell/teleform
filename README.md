@@ -64,7 +64,7 @@ Each resource must implement `TeleSync`.
 ### providers
 
 A provider is an associated type on `TeleSync` that helps sync your resources to
-your IaC definition. For AWS, the provider is `&'a SdkConfig`, which is used to
+your IaC definition. For AWS, the provider is `SdkConfig`, which is used to
 create a client for each AWS sub-service.
 
 #### included providers

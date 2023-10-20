@@ -122,7 +122,7 @@ fn get_should_recreate_update(
 
 #[derive(Debug, Default)]
 struct ImplDetails {
-    helper: Option<syn::TypeReference>,
+    helper: Option<syn::Type>,
     create: Option<syn::Ident>,
     update: Option<syn::Ident>,
     delete: Option<syn::Ident>,
@@ -135,8 +135,8 @@ fn get_impl_details(attrs: &[Attribute]) -> syn::Result<ImplDetails> {
             att.parse_nested_meta(|meta| {
                 if meta.path.is_ident("helper") {
                     let value = meta.value()?;
-                    let tyref: syn::TypeReference = value.parse()?;
-                    details.helper = Some(tyref);
+                    let ty: syn::Type = value.parse()?;
+                    details.helper = Some(ty);
                 } else if meta.path.is_ident("create") {
                     let value = meta.value()?;
                     let ident: syn::Ident = value.parse()?;
@@ -214,7 +214,7 @@ pub fn derive_telesync(input: proc_macro::TokenStream) -> proc_macro::TokenStrea
         where
             #(#where_constraints),*
         {
-            type Provider<'a> = #helper;
+            type Provider = #helper;
 
             fn composite(self, other: Self) -> Self {
                 #composite
@@ -228,39 +228,33 @@ pub fn derive_telesync(input: proc_macro::TokenStream) -> proc_macro::TokenStrea
                 #should_update
             }
 
-            fn create<'ctx, 'a>(
+            fn create<'a>(
                 &'a mut self,
                 apply: bool,
-                helper: Self::Provider<'ctx>,
+                helper: &'a Self::Provider,
                 name: &'a str,
             ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + 'a>>
-            where
-                'ctx: 'a,
             {
                 Box::pin(#create)
             }
 
-            fn update<'ctx, 'a>(
+            fn update<'a>(
                 &'a mut self,
                 apply: bool,
-                helper: Self::Provider<'ctx>,
+                helper: &'a Self::Provider,
                 name: &'a str,
                 previous: &'a Self,
             ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + 'a>>
-            where
-                'ctx: 'a,
             {
                 Box::pin(#update)
             }
 
-            fn delete<'ctx, 'a>(
+            fn delete<'a>(
                 &'a self,
                 apply: bool,
-                helper: Self::Provider<'ctx>,
+                helper: &'a Self::Provider,
                 name: &'a str,
             ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + 'a>>
-            where
-                'ctx: 'a,
             {
                 Box::pin(#delete)
             }

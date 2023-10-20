@@ -1,8 +1,7 @@
 //! Example of using teleform in a Rust command-line program.
 use anyhow::Context;
-use aws_config::SdkConfig;
 use clap::Parser;
-use tele::{aws, Local, Remote, Store};
+use tele::{aws::{self, Aws}, Local, Remote, Store};
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct Infra {
@@ -20,7 +19,7 @@ pub struct Infra {
 /// Apply the infrastructure to our store, synchronizing it with our remote resources.
 pub async fn infrastructure<'b, 'a: 'b>(
     account_id: String,
-    store: &'b mut Store<&'a SdkConfig>,
+    store: &'b mut Store<Aws>,
 ) -> anyhow::Result<Infra> {
     let dydb_table = store
         .sync(
@@ -40,7 +39,7 @@ pub async fn infrastructure<'b, 'a: 'b>(
 
     // TODO: consider making `finalize` part of TeleSync.
     if store.apply {
-        aws::dynamodb::finalize(&dydb_table, store.cfg).await?;
+        aws::dynamodb::finalize(&dydb_table, store.cfg.as_ref()).await?;
         log::info!("...done");
     }
 
@@ -148,7 +147,7 @@ pub async fn infrastructure<'b, 'a: 'b>(
         .await?;
 
     // Add permission for the http gateway to call the lambda
-    let region = store.cfg.region().context("unknown region")?;
+    let region = store.cfg.as_ref().region().context("unknown region")?;
     let source_arn = apigateway
         .api_id
         .maybe_ref()
@@ -268,8 +267,8 @@ async fn main() -> anyhow::Result<()> {
     let backup_store_path = store_path.with_extension("bak.json");
     log::debug!("using store file: {}", store_path.display());
 
-    let sdk_cfg = aws_config::from_env().load().await;
-    let mut store = tele::cli::create_store(&store_path, &backup_store_path, &sdk_cfg, apply)?;
+    let aws_provider = Aws(aws_config::from_env().load().await);
+    let mut store = tele::cli::create_store(&store_path, &backup_store_path, aws_provider, apply)?;
 
     let maybe_infra = if delete {
         log::warn!("deleting previous infrastructure!");

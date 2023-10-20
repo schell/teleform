@@ -6,7 +6,7 @@ use crate::{TeleSync, Remote, Local, self as tele};
 
 /// AWS policy resource
 #[derive(TeleSync, Debug, Default, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-#[tele(helper = &'a SdkConfig)]
+#[tele(helper = SdkConfig)]
 #[tele(create = create_policy, update = update_policy, delete = delete_policy)]
 pub struct Policy {
     #[tele(should_recreate)]
@@ -75,7 +75,7 @@ async fn delete_policy(
 
 /// AWS role resources.
 #[derive(TeleSync, Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
-#[tele(helper = &'a aws_config::SdkConfig)]
+#[tele(helper = aws_config::SdkConfig)]
 #[tele(create = create_role, update = update_role, delete = delete_role)]
 pub struct Role {
     #[tele(should_recreate)]

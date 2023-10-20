@@ -140,7 +140,7 @@ impl From<BillingMode> for Option<aws::ProvisionedThroughput> {
 }
 
 #[derive(TeleSync, Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
-#[tele(helper = &'a SdkConfig)]
+#[tele(helper = SdkConfig)]
 #[tele(create = create_table, update = update_table, delete = delete_table)]
 pub struct Table {
     pub table_name: Local<String>,

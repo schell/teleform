@@ -4,7 +4,7 @@ use aws_config::SdkConfig;
 use crate::{self as tele, Local, TeleSync};
 
 #[derive(TeleSync, Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
-#[tele(helper = &'a SdkConfig)]
+#[tele(helper = SdkConfig)]
 #[tele(create = create_bucket, update = update_bucket, delete = delete_bucket)]
 pub struct Bucket {
     pub acl: Local<String>,

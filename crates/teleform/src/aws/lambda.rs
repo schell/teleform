@@ -9,7 +9,7 @@ use crate::{Local, Remote, TeleSync, self as tele};
 /// Returns the sha256 digest of the file at the given path *if it exists*.
 /// If the file does _not_ exist it returns `Ok(None)`.
 pub fn sha256_digest(path: impl AsRef<std::path::Path>) -> anyhow::Result<Option<String>> {
-    log::debug!("determining sha256 of {}", path.as_ref().display());
+    log::trace!("determining sha256 of {}", path.as_ref().display());
     if !path.as_ref().exists() {
         return Ok(None);
     }
@@ -36,7 +36,7 @@ pub fn sha256_digest(path: impl AsRef<std::path::Path>) -> anyhow::Result<Option
 }
 
 #[derive(TeleSync, Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
-#[tele(helper = &'a SdkConfig)]
+#[tele(helper = SdkConfig)]
 #[tele(create = create_lambda, update = update_lambda, delete = delete_lambda)]
 pub struct Lambda {
     #[tele(should_recreate)]
@@ -212,7 +212,7 @@ async fn delete_lambda(
 }
 
 #[derive(TeleSync, Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
-#[tele(helper = &'a SdkConfig)]
+#[tele(helper = SdkConfig)]
 #[tele(create = create_added_perm, update = update_added_perm, delete = delete_added_perm)]
 pub struct LambdaAddedPermission {
     // The function ARN.

@@ -21,7 +21,7 @@ impl Protocol {
 }
 
 #[derive(TeleSync, Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
-#[tele(helper = &'a SdkConfig)]
+#[tele(helper = SdkConfig)]
 #[tele(create = create_api, update = update_api, delete = delete_api)]
 pub struct ApiGatewayV2 {
     pub target_lambda_arn: Option<Remote<String>>,
@@ -118,7 +118,7 @@ impl From<IntegrationType> for aws_sdk_apigatewayv2::types::IntegrationType {
 }
 
 #[derive(TeleSync, Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
-#[tele(helper = &'a SdkConfig)]
+#[tele(helper = SdkConfig)]
 #[tele(create = create_integration, update = update_integration, delete = delete_integration)]
 pub struct Integration {
     pub api_id: Remote<String>,
@@ -222,7 +222,7 @@ async fn delete_integration(
 }
 
 #[derive(TeleSync, Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
-#[tele(helper = &'a SdkConfig)]
+#[tele(helper = SdkConfig)]
 #[tele(create = create_route, update = update_route, delete = delete_route)]
 pub struct Route {
     // Id of the ApiGatewayV2 gateway
@@ -336,7 +336,7 @@ async fn delete_route(
 }
 
 #[derive(TeleSync, Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
-#[tele(helper = &'a SdkConfig)]
+#[tele(helper = SdkConfig)]
 #[tele(create = create_stage, update = update_stage, delete = delete_stage)]
 pub struct Stage {
     #[tele(should_recreate)]

@@ -7,8 +7,17 @@ pub mod iam;
 pub mod lambda;
 pub mod s3;
 
-pub async fn prune<'a: 'b, 'b>(
-    store: &'b mut crate::Store<&'a SdkConfig>
+/// A wrapper around the AWS `SdkConfig` that provides `AsRef<SdkConfig>`.
+pub struct Aws(pub SdkConfig);
+
+impl AsRef<SdkConfig> for Aws {
+    fn as_ref(&self) -> &SdkConfig {
+        &self.0
+    }
+}
+
+pub async fn prune<T: AsRef<SdkConfig>>(
+    store: &mut crate::Store<T>
 ) -> anyhow::Result<()> {
     store.prune::<apigatewayv2::Route>().await?;
     store.prune::<apigatewayv2::Stage>().await?;
