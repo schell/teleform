@@ -233,14 +233,14 @@ pub struct Store<Config> {
 }
 
 impl<Config> Store<Config> {
+    pub fn path(&self) -> &std::path::PathBuf {
+        &self.path
+    }
+
     /// Insert an IaC resource into the store.
     ///
     /// This is useful for adding resources created outside of teleform.
-    pub fn insert<'a, Data>(
-        &mut self,
-        name: impl Into<String>,
-        data: Data
-    ) -> anyhow::Result<()>
+    pub fn insert<'a, Data>(&mut self, name: impl Into<String>, data: Data) -> anyhow::Result<()>
     where
         Config: AsRef<<Data as TeleSync>::Provider>,
         Data: std::any::Any + TeleSync,
@@ -433,6 +433,8 @@ pub mod cli {
     //! This is useful for setting up your infrastructure as a subcommand of xtask,
     //! for example.
 
+    use std::io::Read;
+
     use anyhow::Context;
 
     use crate::Store;
@@ -504,5 +506,34 @@ pub mod cli {
             return Ok(false);
         }
         Ok(true)
+    }
+
+    /// Returns the sha256 digest of the file at the given path *if it exists*.
+    /// If the file does _not_ exist it returns `Ok(None)`.
+    pub fn sha256_digest(path: impl AsRef<std::path::Path>) -> anyhow::Result<Option<String>> {
+        log::trace!("determining sha256 of {}", path.as_ref().display());
+        if !path.as_ref().exists() {
+            return Ok(None);
+        }
+
+        fn sha256<R: Read>(mut reader: R) -> anyhow::Result<ring::digest::Digest> {
+            let mut context = ring::digest::Context::new(&ring::digest::SHA256);
+            let mut buffer = [0; 1024];
+
+            loop {
+                let count = reader.read(&mut buffer)?;
+                if count == 0 {
+                    break;
+                }
+                context.update(&buffer[..count]);
+            }
+
+            Ok(context.finish())
+        }
+
+        let input = std::fs::File::open(path)?;
+        let reader = std::io::BufReader::new(input);
+        let digest = sha256(reader)?;
+        Ok(Some(data_encoding::HEXUPPER.encode(digest.as_ref())))
     }
 }

@@ -116,7 +116,7 @@ pub async fn infrastructure<'b, 'a: 'b>(
                 name: "teleform-example-lambda".into(),
                 role_arn: lambda_role.arn.clone().into(),
                 handler: "bootstrap".into(),
-                zip_file_hash: aws::lambda::sha256_digest(zip_file_path.as_ref())?
+                zip_file_hash: tele::cli::sha256_digest(zip_file_path.as_ref())?
                     .map(Remote::Remote)
                     .unwrap_or(Remote::Unknown),
                 zip_file_path,

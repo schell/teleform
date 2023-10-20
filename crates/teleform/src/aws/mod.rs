@@ -26,6 +26,7 @@ pub async fn prune<T: AsRef<SdkConfig>>(
     store.prune::<dynamodb::Table>().await?;
     store.prune::<lambda::LambdaAddedPermission>().await?;
     store.prune::<lambda::Lambda>().await?;
+    store.prune::<s3::Object>().await?;
     store.prune::<s3::Bucket>().await?;
     store.prune::<iam::Role>().await?;
     store.prune::<iam::Policy>().await?;
