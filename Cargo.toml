@@ -1,0 +1,8 @@
+[workspace]
+
+members = [
+    "crates/teleform",
+    "crates/teleform-derive",
+]
+
+resolver = "2"
