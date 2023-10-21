@@ -2,16 +2,16 @@
 use anyhow::Context;
 use aws_config::SdkConfig;
 
-use crate::{TeleSync, Remote, Local, self as tele};
+use crate::{self as tele, Local, Remote, TeleSync};
 
 /// AWS policy resource
 #[derive(TeleSync, Debug, Default, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[tele(helper = SdkConfig)]
 #[tele(create = create_policy, update = update_policy, delete = delete_policy)]
 pub struct Policy {
-    #[tele(should_recreate)]
     pub document: Local<serde_json::Value>,
     pub arn: Remote<String>,
+    pub version_id: Option<Remote<String>>,
 }
 
 async fn create_policy(
@@ -40,15 +40,30 @@ async fn create_policy(
 }
 
 async fn update_policy(
-    _: &mut Policy,
+    policy: &mut Policy,
     apply: bool,
-    _: &SdkConfig,
-    name: &str,
+    cfg: &SdkConfig,
+    _name: &str,
     _: &Policy,
 ) -> anyhow::Result<()> {
     if apply {
-        log::error!("policy '{name}' should be recreated, not updated");
-        anyhow::bail!("policy '{name}' should be recreated");
+        let client = aws_sdk_iam::Client::new(cfg);
+        let out = client
+            .create_policy_version()
+            .policy_arn(
+                policy
+                    .arn
+                    .maybe_ref()
+                    .context("cannot update policy - missing arn")?,
+            )
+            .policy_document(&serde_json::to_string(&policy.document)?)
+            .set_as_default(true)
+            .send()
+            .await?;
+        policy.version_id = out
+            .policy_version
+            .map(|v| v.version_id.map(Remote::from))
+            .flatten();
     }
 
     Ok(())
@@ -148,12 +163,7 @@ async fn update_role(
     Ok(())
 }
 
-async fn delete_role(
-    role: &Role,
-    apply: bool,
-    cfg: &SdkConfig,
-    name: &str,
-) -> anyhow::Result<()> {
+async fn delete_role(role: &Role, apply: bool, cfg: &SdkConfig, name: &str) -> anyhow::Result<()> {
     if apply {
         if let Some(policy_arn) = role.attached_policy_arn.as_ref() {
             detach_policy(
