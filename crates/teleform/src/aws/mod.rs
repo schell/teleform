@@ -21,8 +21,11 @@ impl AsRef<SdkConfig> for Aws {
 pub async fn prune<T: AsRef<SdkConfig>>(
     store: &mut crate::Store<T>
 ) -> anyhow::Result<()> {
+    store.prune::<route53::Record>().await?;
+    store.prune::<apigatewayv2::ApiMapping>().await?;
     store.prune::<apigatewayv2::Route>().await?;
     store.prune::<apigatewayv2::Stage>().await?;
+    store.prune::<apigatewayv2::DomainName>().await?;
     store.prune::<apigatewayv2::Integration>().await?;
     store.prune::<apigatewayv2::ApiGatewayV2>().await?;
     store.prune::<dynamodb::Table>().await?;

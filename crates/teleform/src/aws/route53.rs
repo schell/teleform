@@ -3,10 +3,41 @@
 use anyhow::Context;
 use aws_config::SdkConfig;
 use aws_sdk_route53::types::{
-    Change, ChangeAction, ChangeBatch, ChangeStatus, ResourceRecord, ResourceRecordSet,
+    self as aws, Change, ChangeAction, ChangeBatch, ChangeStatus, ResourceRecord, ResourceRecordSet,
 };
 
-use crate::{self as tele, Local, TeleSync};
+use crate::{self as tele, Local, TeleEither, TeleSync, Remote};
+
+// TODO: create a derive macro for TeleEither.
+
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AliasTarget {
+    pub hosted_zone_id: Remote<String>,
+    pub dns_name: Remote<String>,
+    pub evaluate_target_health: Local<bool>,
+}
+
+impl TeleEither for AliasTarget {
+    fn either(self, other: Self) -> Self {
+        AliasTarget {
+            hosted_zone_id: self.hosted_zone_id.either(other.hosted_zone_id),
+            dns_name: self.dns_name.either(other.dns_name),
+            evaluate_target_health: self
+                .evaluate_target_health
+                .either(other.evaluate_target_health),
+        }
+    }
+}
+
+impl From<AliasTarget> for aws::AliasTarget {
+    fn from(a: AliasTarget) -> Self {
+        aws::AliasTarget::builder()
+            .set_hosted_zone_id(a.hosted_zone_id.maybe_ref().cloned())
+            .set_dns_name(a.dns_name.maybe_ref().cloned())
+            .evaluate_target_health(*a.evaluate_target_health.as_ref())
+            .build()
+    }
+}
 
 #[derive(TeleSync, Debug, Default, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[tele(helper = SdkConfig)]
@@ -18,6 +49,7 @@ pub struct Record {
     pub type_is: Local<String>,
     pub ttl: Local<Option<i64>>,
     pub resource_records: Local<Option<Vec<String>>>,
+    pub alias_target: Option<AliasTarget>,
 }
 
 async fn create_record(
@@ -40,11 +72,13 @@ async fn create_record(
                                 let name = record.record_name.as_str();
                                 let ttl = record.ttl.as_ref().clone();
                                 let ty = record.type_is.as_str().into();
-                                log::trace!("name: {name} ttl: {ttl:?} ty: {ty:?}");
                                 ResourceRecordSet::builder()
                                     .name(name)
                                     .r#type(ty)
                                     .set_ttl(ttl)
+                                    .set_alias_target(
+                                        record.alias_target.clone().map(aws::AliasTarget::from),
+                                    )
                                     .set_resource_records(
                                         record.resource_records.as_ref().as_ref().map(
                                             |records: &Vec<String>| {

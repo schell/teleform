@@ -1,6 +1,7 @@
 //! # Teleform
 //! Like Terraform, but Rusty.
 use anyhow::Context;
+use colored::Colorize;
 use std::{
     cmp::Ordering,
     collections::BTreeMap,
@@ -265,6 +266,8 @@ impl<Config> Store<Config> {
         Config: AsRef<<Data as TeleSync>::Provider>,
         Data: std::any::Any + TeleSync + Clone,
     {
+        use colored::*;
+
         let name = name.into();
         let provider: &Data::Provider = self.cfg.as_ref();
         log::trace!("sync'ing {name}");
@@ -310,14 +313,11 @@ impl<Config> Store<Config> {
             // create
             log::info!(
                 "creating {name}:\n{}",
-                serde_json::to_string_pretty(&data).context("json")?
+                serde_json::to_string_pretty(&data).context("json")?.green()
             );
             data.create(self.apply, provider, &name).await?;
             if self.apply {
-                log::info!(
-                    "...created\n{}",
-                    serde_json::to_string_pretty(&data).context("json")?
-                );
+                log::info!("...created");
             }
             let mut rez = Rez::new(data.clone())?;
             rez.use_count += 1;
@@ -380,6 +380,8 @@ impl<Config> Store<Config> {
                     if rez.type_is == type_is {
                         // UNWRAP: safe because we just created it above
                         log::warn!("cleaning up resource {name} {}", type_is.unwrap());
+                        // UNWRAP: safe because Value always converts
+                        log::info!("{}", serde_json::to_string_pretty(&rez.data).unwrap().red());
                     } else {
                         continue;
                     }
