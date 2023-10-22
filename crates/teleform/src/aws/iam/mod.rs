@@ -11,7 +11,7 @@ use crate::{self as tele, Local, Remote, TeleSync};
 pub struct Policy {
     pub document: Local<serde_json::Value>,
     pub arn: Remote<String>,
-    pub version_id: Option<Remote<String>>,
+    pub version_id: Remote<Option<String>>,
 }
 
 async fn create_policy(
@@ -62,8 +62,9 @@ async fn update_policy(
             .await?;
         policy.version_id = out
             .policy_version
-            .map(|v| v.version_id.map(Remote::from))
-            .flatten();
+            .map(|pv| pv.version_id().map(|s| s.to_string()))
+            .flatten()
+            .into();
     }
 
     Ok(())

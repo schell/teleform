@@ -81,7 +81,8 @@ The store is a `BTreeMap` of resources that get syncronized and serialized. It i
 the main structure you interact with in your command line program when defining
 your infrastructure.
 
-## alpha
+## WARNING: alpha software!
 
-This software is super-alpha! It pretty much works, but I wouldn't base your corp
-on it, unless you're a computer cowboy like me. Yeehaw!
+This software is super-alpha! It pretty much works along my happy path, but I
+wouldn't base _your_ corp on it, unless you're a computer cowboy like me.
+Yeehaw!

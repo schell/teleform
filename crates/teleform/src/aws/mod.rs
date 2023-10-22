@@ -2,9 +2,11 @@
 
 pub use aws_config::SdkConfig;
 pub mod apigatewayv2;
+pub mod acm;
 pub mod dynamodb;
 pub mod iam;
 pub mod lambda;
+pub mod route53;
 pub mod s3;
 
 /// A wrapper around the AWS `SdkConfig` that provides `AsRef<SdkConfig>`.
