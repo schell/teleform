@@ -208,6 +208,15 @@ where
         name: &'a str,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + 'a>>;
 
+    fn create_finalize<'a>(
+        &'a mut self,
+        _apply: bool,
+        _helper: &'a Self::Provider,
+        _name: &'a str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
+
     fn update<'a>(
         &'a mut self,
         apply: bool,
@@ -215,6 +224,15 @@ where
         name: &'a str,
         previous: &'a Self,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + 'a>>;
+
+    fn update_finalize<'a>(
+        &'a mut self,
+        _apply: bool,
+        _helper: &'a Self::Provider,
+        _name: &'a str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
 
     fn delete<'a>(
         &'a self,
@@ -270,6 +288,8 @@ impl<Config> Store<Config> {
 
         let name = name.into();
         let provider: &Data::Provider = self.cfg.as_ref();
+        let mut created = false;
+        let mut updated = false;
         log::trace!("sync'ing {name}");
         if let Some(existing) = self.rez.get_mut(&name) {
             let existing_data: Data = serde_json::from_value(existing.data.clone())
@@ -293,6 +313,7 @@ impl<Config> Store<Config> {
                 }
                 log::info!("creating {name}");
                 data.create(self.apply, provider, &name).await?;
+                created = true;
                 if self.apply {
                     log::info!("...created");
                 }
@@ -300,6 +321,7 @@ impl<Config> Store<Config> {
                 log::info!("updating {name}:\n{comparison}");
                 data.update(self.apply, provider, &name, &existing_data)
                     .await?;
+                updated = true;
                 if self.apply {
                     log::info!("...updated");
                 }
@@ -316,15 +338,28 @@ impl<Config> Store<Config> {
                 serde_json::to_string_pretty(&data).context("json")?.green()
             );
             data.create(self.apply, provider, &name).await?;
+            created = true;
             if self.apply {
                 log::info!("...created");
             }
             let mut rez = Rez::new(data.clone())?;
             rez.use_count += 1;
-            self.rez.insert(name, rez);
+            self.rez.insert(name.clone(), rez);
         };
         if self.apply {
             self.save(&self.path)?;
+        }
+        if created {
+            data.create_finalize(self.apply, provider, &name).await?;
+            if self.apply {
+                self.save(&self.path)?;
+            }
+        }
+        if updated {
+            data.update_finalize(self.apply, provider, &name).await?;
+            if self.apply {
+                self.save(&self.path)?;
+            }
         }
         Ok(data)
     }

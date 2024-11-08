@@ -547,7 +547,7 @@ async fn delete_domain_name(
     Ok(())
 }
 
-#[derive(TeleSync, Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(TeleSync, Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 #[tele(helper = SdkConfig)]
 #[tele(create = create_mapping, update = update_mapping, delete = delete_mapping)]
 pub struct ApiMapping {
@@ -556,6 +556,7 @@ pub struct ApiMapping {
     pub domain_name: Local<String>,
     //pub api_mapping_key: Local<String>,
     pub stage: Local<String>,
+    pub api_mapping_id: Remote<String>,
 }
 
 async fn create_mapping(
@@ -566,7 +567,7 @@ async fn create_mapping(
 ) -> anyhow::Result<()> {
     if apply {
         let client = aws_sdk_apigatewayv2::Client::new(cfg);
-        let _out = client
+        let out = client
             .create_api_mapping()
             .api_id(
                 mapping
@@ -579,6 +580,10 @@ async fn create_mapping(
             .stage(mapping.stage.as_str())
             .send()
             .await?;
+        mapping.api_mapping_id = out
+            .api_mapping_id
+            .context("cannot get api_mapping_id")?
+            .into();
     }
     Ok(())
 }
@@ -599,14 +604,24 @@ async fn update_mapping(
 }
 
 async fn delete_mapping(
-    _mapping: &ApiMapping,
+    mapping: &ApiMapping,
     apply: bool,
     cfg: &SdkConfig,
     _name: &str,
 ) -> anyhow::Result<()> {
     if apply {
-        let _client = aws_sdk_apigatewayv2::Client::new(cfg);
-        todo!()
+        let client = aws_sdk_apigatewayv2::Client::new(cfg);
+        let _out = client
+            .delete_api_mapping()
+            .api_mapping_id(
+                mapping
+                    .api_mapping_id
+                    .maybe_ref()
+                    .context("cannot delete mapping - missing api_mapping_id")?,
+            )
+            .domain_name(mapping.domain_name.as_str())
+            .send()
+            .await?;
     }
     Ok(())
 }

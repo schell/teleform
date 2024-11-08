@@ -29,8 +29,10 @@ fn get_composite(input: &DeriveInput) -> syn::Result<Composite> {
         .map(|field| &field.ty)
         .collect::<HashSet<_>>()
         .into_iter()
-        .map(|ty| quote! {
-            #ty: tele::TeleEither
+        .map(|ty| {
+            quote! {
+                #ty: tele::TeleEither
+            }
         })
         .collect();
     let composites: Vec<_> = fields
@@ -124,7 +126,9 @@ fn get_should_recreate_update(
 struct ImplDetails {
     helper: Option<syn::Type>,
     create: Option<syn::Ident>,
+    create_finalize: Option<syn::Ident>,
     update: Option<syn::Ident>,
+    update_finalize: Option<syn::Ident>,
     delete: Option<syn::Ident>,
 }
 
@@ -141,10 +145,18 @@ fn get_impl_details(attrs: &[Attribute]) -> syn::Result<ImplDetails> {
                     let value = meta.value()?;
                     let ident: syn::Ident = value.parse()?;
                     details.create = Some(ident);
+                } else if meta.path.is_ident("create_finalize") {
+                    let value = meta.value()?;
+                    let ident: syn::Ident = value.parse()?;
+                    details.create_finalize = Some(ident);
                 } else if meta.path.is_ident("update") {
                     let value = meta.value()?;
                     let ident: syn::Ident = value.parse()?;
                     details.update = Some(ident);
+                } else if meta.path.is_ident("update_finalize") {
+                    let value = meta.value()?;
+                    let ident: syn::Ident = value.parse()?;
+                    details.update_finalize = Some(ident);
                 } else if meta.path.is_ident("delete") {
                     let value = meta.value()?;
                     let ident: syn::Ident = value.parse()?;
@@ -184,6 +196,14 @@ pub fn derive_telesync(input: proc_macro::TokenStream) -> proc_macro::TokenStrea
             }
         })
         .unwrap_or_else(|| quote! { compile_error!("missing tele_create_with attribute")});
+    let create_finalize = details
+        .create_finalize
+        .map(|f| {
+            quote! {
+                #f(self, apply, helper, name)
+            }
+        })
+        .unwrap_or_else(|| quote! {std::future::ready(Ok(()))});
     let update = details
         .update
         .map(|update| {
@@ -192,6 +212,14 @@ pub fn derive_telesync(input: proc_macro::TokenStream) -> proc_macro::TokenStrea
             }
         })
         .unwrap_or_else(|| quote! {compile_error!("missing tele_update_with attribute")});
+    let update_finalize = details
+        .update_finalize
+        .map(|f| {
+            quote! {
+                #f(self, apply, helper, name)
+            }
+        })
+        .unwrap_or_else(|| quote! {std::future::ready(Ok(()))});
     let delete = details
         .delete
         .map(|delete| {
@@ -200,7 +228,10 @@ pub fn derive_telesync(input: proc_macro::TokenStream) -> proc_macro::TokenStrea
             }
         })
         .unwrap_or_else(|| quote! {compile_error!("missing tele_delete_with attribute")});
-    let Composite { function_body: composite, where_constraints } = match get_composite(&input) {
+    let Composite {
+        function_body: composite,
+        where_constraints,
+    } = match get_composite(&input) {
         Ok(c) => c,
         Err(e) => return e.into_compile_error().into(),
     };
@@ -238,6 +269,15 @@ pub fn derive_telesync(input: proc_macro::TokenStream) -> proc_macro::TokenStrea
                 Box::pin(#create)
             }
 
+            fn create_finalize<'a>(
+                &'a mut self,
+                apply: bool,
+                helper: &'a Self::Provider,
+                name: &'a str,
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + 'a>> {
+                Box::pin(#create_finalize)
+            }
+
             fn update<'a>(
                 &'a mut self,
                 apply: bool,
@@ -247,6 +287,15 @@ pub fn derive_telesync(input: proc_macro::TokenStream) -> proc_macro::TokenStrea
             ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + 'a>>
             {
                 Box::pin(#update)
+            }
+
+            fn update_finalize<'a>(
+                &'a mut self,
+                apply: bool,
+                helper: &'a Self::Provider,
+                name: &'a str,
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + 'a>> {
+                Box::pin(#update_finalize)
             }
 
             fn delete<'a>(

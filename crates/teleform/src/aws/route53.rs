@@ -67,7 +67,7 @@ async fn create_record(
                 ChangeBatch::builder()
                     .changes(
                         Change::builder()
-                            .action(ChangeAction::Create)
+                            .action(ChangeAction::Upsert)
                             .resource_record_set({
                                 let name = record.record_name.as_str();
                                 let ttl = record.ttl.as_ref().clone();
@@ -124,17 +124,13 @@ async fn create_record(
 }
 
 async fn update_record(
-    _record: &mut Record,
+    record: &mut Record,
     apply: bool,
     cfg: &SdkConfig,
-    _name: &str,
+    name: &str,
     _previous: &Record,
 ) -> anyhow::Result<()> {
-    if apply {
-        let _client = aws_sdk_route53::Client::new(cfg);
-        todo!()
-    }
-
+    create_record(record, apply, cfg, name).await?;
     Ok(())
 }
 

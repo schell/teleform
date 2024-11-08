@@ -37,12 +37,6 @@ pub async fn infrastructure<'b, 'a: 'b>(
         )
         .await?;
 
-    // TODO: consider making `finalize` part of TeleSync.
-    if store.apply {
-        aws::dynamodb::finalize(&dydb_table, store.cfg.as_ref()).await?;
-        log::info!("...done");
-    }
-
     let lambda_policy = store
         .sync(
             "lambda-apigateway-policy",

@@ -1,5 +1,5 @@
 //! AWS DynamoDB infrastructure.
-use crate::{Local, Remote, TeleSync, self as tele};
+use crate::{self as tele, Local, Remote, TeleSync};
 use anyhow::Context;
 use aws_config::SdkConfig;
 use aws_sdk_dynamodb::types as aws;
@@ -141,10 +141,16 @@ impl From<BillingMode> for Option<aws::ProvisionedThroughput> {
 
 #[derive(TeleSync, Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 #[tele(helper = SdkConfig)]
-#[tele(create = create_table, update = update_table, delete = delete_table)]
+#[tele(
+    create = create_table,
+    create_finalize = create_finalize_table,
+    update = update_table,
+    delete = delete_table
+)]
 pub struct Table {
     pub table_name: Local<String>,
     pub table_class: Local<TableClass>,
+    #[tele(should_recreate)]
     pub key_schema: Local<Vec<KeySchemaElement>>,
     pub billing_mode: Local<BillingMode>,
     // Known after creation.
@@ -157,7 +163,7 @@ async fn create_table(
     table: &mut Table,
     apply: bool,
     cfg: &SdkConfig,
-    name: &str,
+    _name: &str,
 ) -> anyhow::Result<()> {
     if apply {
         let client = aws_sdk_dynamodb::Client::new(cfg);
@@ -196,43 +202,45 @@ async fn create_table(
         if let Some(id) = description.table_id {
             table.id = id.into();
         }
-        log::info!(
-            "table {name} {} creation started, you must wait for AWS to finialize \
-             before adding items",
-            table.arn
-        );
     }
     Ok(())
 }
 
-pub async fn finalize(
-    table: &Table,
+pub async fn create_finalize_table(
+    table: &mut Table,
+    apply: bool,
     cfg: &SdkConfig,
+    _name: &str,
 ) -> anyhow::Result<()> {
-    // timeout after 5 minutes
-    let timeout_secs = 60 * 5;
-    let start = std::time::Instant::now();
-    log::info!("awaiting table finialization");
-    loop {
-        let client = aws_sdk_dynamodb::Client::new(cfg);
-        let out = client
-            .describe_table()
-            .table_name(&table.table_name.0)
-            .send()
-            .await?;
-        let table_info = out.table.context("missing table description")?;
-        if table_info.table_status == Some(aws::TableStatus::Active) {
-            return Ok(());
+    if apply {
+        // timeout after 5 minutes
+        let timeout_secs = 60 * 5;
+        let start = std::time::Instant::now();
+        log::info!("awaiting table creation finialization");
+        loop {
+            let client = aws_sdk_dynamodb::Client::new(cfg);
+            let out = client
+                .describe_table()
+                .table_name(&table.table_name.0)
+                .send()
+                .await?;
+            let table_info = out.table.context("missing table description")?;
+            if table_info.table_status == Some(aws::TableStatus::Active) {
+                log::info!("...finalized");
+                return Ok(());
+            }
+            anyhow::ensure!(
+                table_info.table_status == Some(aws::TableStatus::Creating),
+                "table finalization failed, table status: {:?}",
+                table_info.table_status
+            );
+            if (std::time::Instant::now() - start).as_secs() >= timeout_secs {
+                anyhow::bail!("finalization timed out after {timeout_secs} seconds");
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
         }
-        anyhow::ensure!(
-            table_info.table_status == Some(aws::TableStatus::Creating),
-            "table finalization failed, table status: {:?}",
-            table_info.table_status
-        );
-        if (std::time::Instant::now() - start).as_secs() >= timeout_secs {
-            anyhow::bail!("finalization timed out after {timeout_secs} seconds");
-        }
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    } else {
+        Ok(())
     }
 }
 

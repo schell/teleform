@@ -1,10 +1,14 @@
 //! AWS Lambda infrastructure.
 use anyhow::Context;
 use aws_config::SdkConfig;
-use aws_sdk_lambda::types::{Architecture, LastUpdateStatus};
-use std::{io::Read, str::FromStr};
+use aws_sdk_lambda::types::{self as aws, Architecture, LastUpdateStatus};
+use std::{
+    collections::{BTreeMap, HashMap},
+    io::Read,
+    str::FromStr,
+};
 
-use crate::{Local, Remote, TeleSync, self as tele};
+use crate::{self as tele, Local, Remote, TeleSync};
 
 #[derive(TeleSync, Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 #[tele(helper = SdkConfig)]
@@ -19,10 +23,28 @@ pub struct Lambda {
     #[serde(default)]
     pub zip_file_hash: Remote<String>,
     pub architecture: Local<Option<String>>,
+    #[serde(default)]
+    pub environment: Local<Option<BTreeMap<String, String>>>,
+    #[serde(default)]
+    // Time (in seconds) the function can run before being terminated.
+    pub timeout: Local<Option<i32>>,
     // Known after creation.
     pub arn: Remote<String>,
     // Known after creation/update.
     pub version: Remote<String>,
+}
+
+impl Lambda {
+    pub fn environment(&self) -> Option<aws::Environment> {
+        let env = self.environment.as_ref().as_ref()?;
+        Some(
+            aws::builders::EnvironmentBuilder::default()
+                .set_variables(Some(HashMap::from_iter(
+                    env.iter().map(|(k, v)| (k.to_string(), v.to_string())),
+                )))
+                .build(),
+        )
+    }
 }
 
 async fn create_lambda(
@@ -52,6 +74,8 @@ async fn create_lambda(
             .package_type(aws_sdk_lambda::types::PackageType::Zip)
             .runtime(aws_sdk_lambda::types::Runtime::Providedal2)
             .set_architectures(Some(vec![arch]))
+            .set_environment(lambda.environment())
+            .set_timeout(lambda.timeout.as_ref().clone())
             .role(
                 lambda
                     .role_arn
@@ -83,8 +107,34 @@ async fn update_lambda(
 ) -> anyhow::Result<()> {
     if apply {
         let client = aws_sdk_lambda::Client::new(cfg);
+
+        async fn await_finalization(client: &aws_sdk_lambda::Client, lambda: &Lambda) -> anyhow::Result<()> {
+            // timeout after 5 minutes
+            let timeout_secs = 60 * 5;
+            let start = std::time::Instant::now();
+            log::info!("awaiting update finialization");
+            loop {
+                let out = client
+                    .get_function_configuration()
+                    .function_name(lambda.name.as_str())
+                    .send()
+                    .await?;
+                let last_update_status = out.last_update_status.context("missing status")?;
+                if last_update_status == LastUpdateStatus::Successful {
+                    break;
+                }
+                if (std::time::Instant::now() - start).as_secs() >= timeout_secs {
+                    anyhow::bail!("finalization timed out after {timeout_secs} seconds");
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            }
+            Ok(())
+        }
+
+        let mut needs_new_version = false;
         if lambda.zip_file_hash != previous.zip_file_hash {
             log::debug!("updating lambda code");
+            needs_new_version = true;
             let arch = lambda
                 .architecture
                 .as_ref()
@@ -115,27 +165,51 @@ async fn update_lambda(
                 .unwrap_or_else(|| "unknown".to_string());
             log::debug!("last_update_status: {last_update_status:?}");
             log::debug!("last_update_status_reason: {last_update_status_reason}");
-            anyhow::ensure!(last_update_status != LastUpdateStatus::Failed, "update failed!");
-            // timeout after 5 minutes
-            let timeout_secs = 60 * 5;
-            let start = std::time::Instant::now();
-            log::info!("awaiting update finialization");
-            loop {
-                let out = client
-                    .get_function_configuration()
-                    .function_name(lambda.name.as_str())
-                    .send()
-                    .await?;
-                let last_update_status = out.last_update_status.context("missing status")?;
-                if last_update_status == LastUpdateStatus::Successful {
-                    break;
-                }
-                if (std::time::Instant::now() - start).as_secs() >= timeout_secs {
-                    anyhow::bail!("finalization timed out after {timeout_secs} seconds");
-                }
-                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-            }
+            anyhow::ensure!(
+                last_update_status != LastUpdateStatus::Failed,
+                "update failed!"
+            );
+            await_finalization(&client, lambda).await?;
+            log::info!("...done")
+        }
 
+        if lambda.environment != previous.environment
+            || lambda.role_arn != previous.role_arn
+            || lambda.handler != previous.handler
+            || lambda.timeout != previous.timeout
+        {
+            log::info!("updating lambda configuration");
+            needs_new_version = true;
+            let out = client
+                .update_function_configuration()
+                .function_name(format!("{}:$LATEST", lambda.name.as_ref()))
+                .set_environment(lambda.environment())
+                .set_timeout(lambda.timeout.as_ref().clone())
+                .role(
+                    lambda
+                        .role_arn
+                        .maybe_ref()
+                        .context("unknown lambda role arn")?,
+                )
+                .handler(lambda.handler.as_ref())
+                .runtime(aws_sdk_lambda::types::Runtime::Providedal2)
+                .send()
+                .await?;
+            let last_update_status = out.last_update_status.context("missing status")?;
+            let last_update_status_reason = out
+                .last_update_status_reason
+                .unwrap_or_else(|| "unknown".to_string());
+            log::debug!("last_update_status: {last_update_status:?}");
+            log::debug!("last_update_status_reason: {last_update_status_reason}");
+            anyhow::ensure!(
+                last_update_status != LastUpdateStatus::Failed,
+                "update failed!"
+            );
+            await_finalization(&client, lambda).await?;
+            log::info!("...done");
+        }
+
+        if needs_new_version {
             log::debug!("publishing a new lambda version");
             let out = client
                 .publish_version()
@@ -143,22 +217,8 @@ async fn update_lambda(
                 .send()
                 .await?;
             lambda.version = out.version.context("missing version")?.into();
-
-            log::info!("...done")
+            log::info!("...pushed a new version");
         }
-        //let _ = client
-        //    .update_function_configuration()
-        //    .function_name(lambda.name.as_ref())
-        //    .role(
-        //        lambda
-        //            .role_arn
-        //            .maybe_ref()
-        //            .context("unknown lambda role arn")?,
-        //    )
-        //    .handler(lambda.handler.as_ref())
-        //    .runtime(aws_sdk_lambda::types::Runtime::Providedal2)
-        //    .send()
-        //    .await?;
         log::info!("...updated lambda {name}");
     }
 
