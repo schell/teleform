@@ -1,4 +1,4 @@
-<img src="https://raw.githubusercontent.com/schell/teleform/main/globe.png" alt="teleform logo" width="250" align="right">
+<img src="https://raw.githubusercontent.com/schell/teleform/main/globe.png" alt="teleform logo" width="250">
 
 # teleform
 
