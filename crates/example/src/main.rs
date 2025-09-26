@@ -1,7 +1,10 @@
 //! Example of using teleform in a Rust command-line program.
 use anyhow::Context;
 use clap::Parser;
-use tele::{aws::{self, Aws}, Local, Remote, Store};
+use tele::{
+    aws::{self, Aws},
+    Local, Remote, Store,
+};
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct Infra {
@@ -108,7 +111,7 @@ pub async fn infrastructure<'b, 'a: 'b>(
             "lambda-function",
             aws::lambda::Lambda {
                 name: "teleform-example-lambda".into(),
-                role_arn: lambda_role.arn.clone().into(),
+                role_arn: lambda_role.arn.clone(),
                 handler: "bootstrap".into(),
                 zip_file_hash: tele::cli::sha256_digest(zip_file_path.as_ref())?
                     .map(Remote::Remote)
@@ -136,7 +139,7 @@ pub async fn infrastructure<'b, 'a: 'b>(
                 api_id: apigateway.api_id.clone(),
                 stage_name: "$default".into(),
                 auto_deploy: true.into(),
-            }
+            },
         )
         .await?;
 
@@ -169,7 +172,7 @@ pub async fn infrastructure<'b, 'a: 'b>(
         .sync(
             "integration",
             aws::apigatewayv2::Integration {
-                api_id: apigateway.api_id.clone().into(),
+                api_id: apigateway.api_id.clone(),
                 integration_uri: (|| -> Option<Remote<String>> {
                     let arn = lambda.arn.maybe_ref()?;
                     let version = lambda.version.maybe_ref()?;
@@ -261,7 +264,9 @@ async fn main() -> anyhow::Result<()> {
     let backup_store_path = store_path.with_extension("bak.json");
     log::debug!("using store file: {}", store_path.display());
 
-    let aws_provider = Aws(aws_config::from_env().load().await);
+    let aws_provider = Aws(aws_config::defaults(aws_config::BehaviorVersion::latest())
+        .load()
+        .await);
     let mut store = tele::cli::create_store(&store_path, &backup_store_path, aws_provider, apply)?;
 
     let maybe_infra = if delete {

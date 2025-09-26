@@ -1,4 +1,5 @@
 //! AWS Lambda infrastructure.
+#![allow(clippy::unbuffered_bytes)]
 use anyhow::Context;
 use aws_config::SdkConfig;
 use aws_sdk_lambda::types::{self as aws, Architecture, LastUpdateStatus};
@@ -56,7 +57,7 @@ async fn create_lambda(
     if apply {
         let client = aws_sdk_lambda::Client::new(cfg);
         let file = std::fs::File::open(lambda.zip_file_path.as_ref())?;
-        let bytes: Vec<u8> = file.bytes().into_iter().try_fold(vec![], |mut acc, byte| {
+        let bytes: Vec<u8> = file.bytes().try_fold(vec![], |mut acc, byte| {
             acc.push(byte?);
             anyhow::Ok(acc)
         })?;
@@ -64,8 +65,7 @@ async fn create_lambda(
             .architecture
             .as_ref()
             .as_ref()
-            .map(|s| Architecture::from_str(&s).ok())
-            .flatten()
+            .and_then(|s| Architecture::from_str(s).ok())
             .unwrap_or(Architecture::Arm64);
         let blob = aws_sdk_lambda::primitives::Blob::new(bytes);
         let out = client
@@ -75,7 +75,7 @@ async fn create_lambda(
             .runtime(aws_sdk_lambda::types::Runtime::Providedal2)
             .set_architectures(Some(vec![arch]))
             .set_environment(lambda.environment())
-            .set_timeout(lambda.timeout.as_ref().clone())
+            .set_timeout(*lambda.timeout.as_ref())
             .role(
                 lambda
                     .role_arn
@@ -108,7 +108,10 @@ async fn update_lambda(
     if apply {
         let client = aws_sdk_lambda::Client::new(cfg);
 
-        async fn await_finalization(client: &aws_sdk_lambda::Client, lambda: &Lambda) -> anyhow::Result<()> {
+        async fn await_finalization(
+            client: &aws_sdk_lambda::Client,
+            lambda: &Lambda,
+        ) -> anyhow::Result<()> {
             // timeout after 5 minutes
             let timeout_secs = 60 * 5;
             let start = std::time::Instant::now();
@@ -139,8 +142,7 @@ async fn update_lambda(
                 .architecture
                 .as_ref()
                 .as_ref()
-                .map(|s| Architecture::from_str(&s).ok())
-                .flatten()
+                .and_then(|s| Architecture::from_str(s).ok())
                 .unwrap_or(Architecture::Arm64);
             let out = client
                 .update_function_code()
@@ -148,11 +150,10 @@ async fn update_lambda(
                 .set_architectures(Some(vec![arch]))
                 .zip_file({
                     let file = std::fs::File::open(lambda.zip_file_path.as_ref())?;
-                    let bytes: Vec<u8> =
-                        file.bytes().into_iter().try_fold(vec![], |mut acc, byte| {
-                            acc.push(byte?);
-                            anyhow::Ok(acc)
-                        })?;
+                    let bytes: Vec<u8> = file.bytes().try_fold(vec![], |mut acc, byte| {
+                        acc.push(byte?);
+                        anyhow::Ok(acc)
+                    })?;
                     log::debug!("sending {} bytes of code/program", bytes.len());
                     aws_sdk_lambda::primitives::Blob::new(bytes)
                 })
@@ -184,7 +185,7 @@ async fn update_lambda(
                 .update_function_configuration()
                 .function_name(format!("{}:$LATEST", lambda.name.as_ref()))
                 .set_environment(lambda.environment())
-                .set_timeout(lambda.timeout.as_ref().clone())
+                .set_timeout(*lambda.timeout.as_ref())
                 .role(
                     lambda
                         .role_arn

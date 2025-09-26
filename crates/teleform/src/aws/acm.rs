@@ -84,7 +84,7 @@ async fn create_cert(
         let out = client
             .request_certificate()
             .domain_name(cert.domain_name.as_str())
-            .validation_method(validation.into())
+            .validation_method(validation)
             .set_subject_alternative_names(subject_alt_names)
             .send()
             .await?;
@@ -143,7 +143,7 @@ impl Certificate {
         let mut set = HashSet::<String>::default();
         for vo in validation_options.into_iter() {
             let r = vo.resource_record.context("missing record")?;
-            let name = r.name.context("missing name")?;
+            let name = r.name;
             if set.contains(&name) {
                 continue;
             } else {
@@ -156,8 +156,8 @@ impl Certificate {
                 resource_record: {
                     ValidationResourceRecord {
                         name,
-                        type_is: r.r#type.context("missing type")?,
-                        value: r.value.context("missing value")?,
+                        type_is: r.r#type,
+                        value: r.value,
                     }
                 },
             };

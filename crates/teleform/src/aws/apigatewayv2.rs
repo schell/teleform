@@ -48,8 +48,7 @@ async fn create_api(
             .set_target(
                 api.target_lambda_arn
                     .as_ref()
-                    .map(|arn| arn.maybe_ref())
-                    .flatten()
+                    .and_then(|arn| arn.maybe_ref())
                     .cloned(),
             )
             .send()
@@ -253,14 +252,7 @@ async fn create_route(
                     .context("cannot create route - missing api_id")?,
             )
             .route_key(route.route_key.as_str())
-            .set_target(
-                route
-                    .target
-                    .maybe_ref()
-                    .map(Option::as_ref)
-                    .flatten()
-                    .cloned(),
-            )
+            .set_target(route.target.maybe_ref().and_then(Option::as_ref).cloned())
             .send()
             .await?;
         route.route_id = out.route_id.context("missing route_id")?.into();
@@ -292,14 +284,7 @@ async fn update_route(
                     .context("cannot create route - missing api_id")?,
             )
             .route_key(route.route_key.as_str())
-            .set_target(
-                route
-                    .target
-                    .maybe_ref()
-                    .map(Option::as_ref)
-                    .flatten()
-                    .cloned(),
-            )
+            .set_target(route.target.maybe_ref().and_then(Option::as_ref).cloned())
             .send()
             .await?;
         route.route_id = out.route_id.context("missing route_id")?.into();
@@ -461,7 +446,7 @@ impl TeleEither for DomainNameConfiguration {
 impl From<DomainNameConfiguration> for aws::DomainNameConfiguration {
     fn from(dnc: DomainNameConfiguration) -> Self {
         aws::DomainNameConfiguration::builder()
-            .set_certificate_arn(dnc.certificate_arn.maybe_ref().map(String::clone))
+            .set_certificate_arn(dnc.certificate_arn.maybe_ref().cloned())
             .endpoint_type(match dnc.endpoint_type.as_ref() {
                 EndpointType::Edge => aws::EndpointType::Edge,
                 EndpointType::Regional => aws::EndpointType::Regional,
@@ -497,19 +482,17 @@ async fn create_domain_name(
             .domain_name_configurations(domain_name.domain_name_configuration.clone().into())
             .send()
             .await?;
-        if let Some(configurations) = out.domain_name_configurations() {
-            if let Some(config) = configurations.first() {
-                domain_name
-                    .domain_name_configuration
-                    .api_gateway_domain_name = config
-                    .api_gateway_domain_name()
-                    .map(|s| s.to_string().into())
-                    .unwrap_or_default();
-                domain_name.domain_name_configuration.hosted_zone_id = config
-                    .hosted_zone_id()
-                    .map(|s| s.to_string().into())
-                    .unwrap_or_default();
-            }
+        if let Some(config) = out.domain_name_configurations().first() {
+            domain_name
+                .domain_name_configuration
+                .api_gateway_domain_name = config
+                .api_gateway_domain_name()
+                .map(|s| s.to_string().into())
+                .unwrap_or_default();
+            domain_name.domain_name_configuration.hosted_zone_id = config
+                .hosted_zone_id()
+                .map(|s| s.to_string().into())
+                .unwrap_or_default();
         }
     }
     Ok(())

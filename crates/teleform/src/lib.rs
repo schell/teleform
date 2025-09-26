@@ -1,4 +1,5 @@
 //! # Teleform
+//!
 //! Like Terraform, but Rusty.
 use anyhow::Context;
 use colored::Colorize;
@@ -108,9 +109,9 @@ impl<T> From<T> for Local<T> {
     }
 }
 
-impl<'a> Into<Local<String>> for &'a str {
-    fn into(self) -> Local<String> {
-        Local::from(self.to_string())
+impl<'a> From<&'a str> for Local<String> {
+    fn from(val: &'a str) -> Self {
+        Local::from(val.to_string())
     }
 }
 
@@ -181,10 +182,7 @@ impl<T> Remote<T> {
 
     #[allow(dead_code)]
     pub fn is_known(&self) -> bool {
-        match self {
-            Remote::Remote(_) => true,
-            _ => false,
-        }
+        matches!(self, Remote::Remote(_))
     }
 }
 
@@ -259,7 +257,7 @@ impl<Config> Store<Config> {
     /// Insert an IaC resource into the store.
     ///
     /// This is useful for adding resources created outside of teleform.
-    pub fn insert<'a, Data>(&mut self, name: impl Into<String>, data: Data) -> anyhow::Result<()>
+    pub fn insert<Data>(&mut self, name: impl Into<String>, data: Data) -> anyhow::Result<()>
     where
         Config: AsRef<<Data as TeleSync>::Provider>,
         Data: std::any::Any + TeleSync,
@@ -275,7 +273,7 @@ impl<Config> Store<Config> {
     }
 
     /// Synchronize a singular IaC resource.
-    pub async fn sync<'a, Data>(
+    pub async fn sync<Data>(
         &mut self,
         name: impl Into<String>,
         mut data: Data,
@@ -411,10 +409,10 @@ impl<Config> Store<Config> {
         if !to_prune.is_empty() {
             for name in to_prune.into_iter() {
                 if let Some(rez) = self.rez.get(&name) {
-                    let type_is = Some(std::any::type_name::<Data>().to_string());
-                    if rez.type_is == type_is {
+                    let type_is = std::any::type_name::<Data>().to_string();
+                    if rez.type_is.as_deref() == Some(&type_is) {
                         // UNWRAP: safe because we just created it above
-                        log::warn!("cleaning up resource {name} {}", type_is.unwrap());
+                        log::warn!("cleaning up resource {name} {}", type_is);
                         // UNWRAP: safe because Value always converts
                         log::info!("{}", serde_json::to_string_pretty(&rez.data).unwrap().red());
                     } else {

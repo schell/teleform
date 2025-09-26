@@ -62,8 +62,7 @@ async fn update_policy(
             .await?;
         policy.version_id = out
             .policy_version
-            .map(|pv| pv.version_id().map(|s| s.to_string()))
-            .flatten()
+            .and_then(|pv| pv.version_id().map(|s| s.to_string()))
             .into();
     }
 
@@ -77,14 +76,12 @@ async fn delete_policy(
     _: &str,
 ) -> anyhow::Result<()> {
     if apply {
-        if apply {
-            let client = aws_sdk_iam::Client::new(cfg);
-            let _ = client
-                .delete_policy()
-                .policy_arn(policy.arn.maybe_ref().context("missing arn")?)
-                .send()
-                .await?;
-        }
+        let client = aws_sdk_iam::Client::new(cfg);
+        let _ = client
+            .delete_policy()
+            .policy_arn(policy.arn.maybe_ref().context("missing arn")?)
+            .send()
+            .await?;
     }
     Ok(())
 }
@@ -121,7 +118,7 @@ async fn create_role(
         if let Some(policy) = role.attached_policy_arn.as_ref() {
             attach_policy(cfg, name, policy.maybe_ref().context("missing policy arn")?).await?;
         }
-        role.arn = iam_role.arn.context("missing arn")?.into();
+        role.arn = iam_role.arn.into();
     }
     Ok(())
 }

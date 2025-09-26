@@ -43,8 +43,10 @@ pub struct KeySchemaElement {
     pub attribute_type: AttributeType,
 }
 
-impl From<&KeySchemaElement> for aws::KeySchemaElement {
-    fn from(value: &KeySchemaElement) -> Self {
+impl TryFrom<&KeySchemaElement> for aws::KeySchemaElement {
+    type Error = aws_sdk_s3::error::BuildError;
+
+    fn try_from(value: &KeySchemaElement) -> Result<Self, Self::Error> {
         aws::KeySchemaElement::builder()
             .attribute_name(value.attribute_name.clone())
             .key_type(value.key_type.into())
@@ -52,8 +54,10 @@ impl From<&KeySchemaElement> for aws::KeySchemaElement {
     }
 }
 
-impl From<&KeySchemaElement> for aws::AttributeDefinition {
-    fn from(value: &KeySchemaElement) -> Self {
+impl TryFrom<&KeySchemaElement> for aws::AttributeDefinition {
+    type Error = aws_sdk_s3::error::BuildError;
+
+    fn try_from(value: &KeySchemaElement) -> Result<Self, Self::Error> {
         aws::AttributeDefinition::builder()
             .attribute_name(value.attribute_name.clone())
             .attribute_type(value.attribute_type.into())
@@ -122,19 +126,21 @@ impl From<BillingMode> for aws::BillingMode {
     }
 }
 
-impl From<BillingMode> for Option<aws::ProvisionedThroughput> {
-    fn from(value: BillingMode) -> Self {
+impl TryFrom<BillingMode> for Option<aws::ProvisionedThroughput> {
+    type Error = aws_sdk_s3::error::BuildError;
+
+    fn try_from(value: BillingMode) -> Result<Self, Self::Error> {
         match value {
-            BillingMode::PayPerRequest => None,
+            BillingMode::PayPerRequest => Ok(None),
             BillingMode::Provisioned {
                 read_capacity_units,
                 write_capacity_units,
-            } => Some(
+            } => Ok(Some(
                 aws::ProvisionedThroughput::builder()
                     .read_capacity_units(read_capacity_units)
                     .write_capacity_units(write_capacity_units)
-                    .build(),
-            ),
+                    .build()?,
+            )),
         }
     }
 }
@@ -172,28 +178,28 @@ async fn create_table(
             .table_name(table.table_name.as_str())
             .table_class(table.table_class.0.into())
             .billing_mode(table.billing_mode.0.into())
-            .set_provisioned_throughput(table.billing_mode.0.into())
+            .set_provisioned_throughput(table.billing_mode.0.try_into()?)
             .set_key_schema(if table.key_schema.is_empty() {
                 None
             } else {
-                Some(
-                    table
-                        .key_schema
-                        .iter()
-                        .map(|k| k.into())
-                        .collect::<Vec<_>>(),
-                )
+                Some({
+                    let mut ks = vec![];
+                    for k in table.key_schema.iter() {
+                        ks.push(k.try_into()?);
+                    }
+                    ks
+                })
             })
             .set_attribute_definitions(if table.key_schema.is_empty() {
                 None
             } else {
-                Some(
-                    table
-                        .key_schema
-                        .iter()
-                        .map(|k| k.into())
-                        .collect::<Vec<_>>(),
-                )
+                Some({
+                    let mut ks = vec![];
+                    for k in table.key_schema.iter() {
+                        ks.push(k.try_into()?);
+                    }
+                    ks
+                })
             })
             .send()
             .await?;

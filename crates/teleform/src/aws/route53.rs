@@ -6,7 +6,7 @@ use aws_sdk_route53::types::{
     self as aws, Change, ChangeAction, ChangeBatch, ChangeStatus, ResourceRecord, ResourceRecordSet,
 };
 
-use crate::{self as tele, Local, TeleEither, TeleSync, Remote};
+use crate::{self as tele, Local, Remote, TeleEither, TeleSync};
 
 // TODO: create a derive macro for TeleEither.
 
@@ -29,8 +29,10 @@ impl TeleEither for AliasTarget {
     }
 }
 
-impl From<AliasTarget> for aws::AliasTarget {
-    fn from(a: AliasTarget) -> Self {
+impl TryFrom<AliasTarget> for aws::AliasTarget {
+    type Error = aws_sdk_s3::error::BuildError;
+
+    fn try_from(a: AliasTarget) -> Result<Self, Self::Error> {
         aws::AliasTarget::builder()
             .set_hosted_zone_id(a.hosted_zone_id.maybe_ref().cloned())
             .set_dns_name(a.dns_name.maybe_ref().cloned())
@@ -70,34 +72,41 @@ async fn create_record(
                             .action(ChangeAction::Upsert)
                             .resource_record_set({
                                 let name = record.record_name.as_str();
-                                let ttl = record.ttl.as_ref().clone();
+                                let ttl = *record.ttl.as_ref();
                                 let ty = record.type_is.as_str().into();
                                 ResourceRecordSet::builder()
                                     .name(name)
                                     .r#type(ty)
                                     .set_ttl(ttl)
                                     .set_alias_target(
-                                        record.alias_target.clone().map(aws::AliasTarget::from),
+                                        if let Some(alias_target) = record.alias_target.clone() {
+                                            Some(aws::AliasTarget::try_from(alias_target)?)
+                                        } else {
+                                            None
+                                        },
                                     )
-                                    .set_resource_records(
-                                        record.resource_records.as_ref().as_ref().map(
-                                            |records: &Vec<String>| {
-                                                records
-                                                    .iter()
-                                                    .map(|value| {
-                                                        ResourceRecord::builder()
-                                                            .value(value)
-                                                            .build()
-                                                    })
-                                                    .collect::<Vec<_>>()
-                                            },
-                                        ),
-                                    )
-                                    .build()
+                                    .set_resource_records({
+                                        if let Some(records) =
+                                            record.resource_records.as_ref().as_ref()
+                                        {
+                                            let mut new_records = vec![];
+                                            for record in records.iter() {
+                                                new_records.push(
+                                                    ResourceRecord::builder()
+                                                        .value(record)
+                                                        .build()?,
+                                                );
+                                            }
+                                            Some(new_records)
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .build()?
                             })
-                            .build(),
+                            .build()?,
                     )
-                    .build(),
+                    .build()?,
             )
             .send()
             .await?;
@@ -105,17 +114,13 @@ async fn create_record(
         log::info!("awaiting record change");
         let timeout_secs = 60;
         let start = std::time::Instant::now();
-        while *info.status().context("missing change_info.status")? == ChangeStatus::Pending {
+        while *info.status() == ChangeStatus::Pending {
             if (std::time::Instant::now() - start).as_secs() >= timeout_secs {
                 anyhow::bail!(
                     "finalization of record creation timed out after {timeout_secs} seconds"
                 )
             }
-            let out = client
-                .get_change()
-                .id(info.id.context("missing change_info.id")?)
-                .send()
-                .await?;
+            let out = client.get_change().id(info.id).send().await?;
             info = out.change_info.context("missing change_info")?;
         }
         log::info!("...records in sync");

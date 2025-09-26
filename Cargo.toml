@@ -8,3 +8,28 @@ members = [
 ]
 
 resolver = "2"
+
+[workspace.dependencies]
+anyhow = "1.0"
+aws-config = "1.8.6"
+aws-sdk-acm = "1.87"
+aws-sdk-apigatewayv2 = "1.86"
+aws-sdk-dynamodb = "1.93"
+aws-sdk-iam = "1.89"
+aws-sdk-lambda = "1.97"
+aws-sdk-rds = "1.109"
+aws-sdk-route53 = "1.95"
+aws-sdk-s3 = "1.106"
+aws-sdk-secretsmanager = "1.88"
+clap = { version = "^4.4", features = ["cargo", "derive", "env"] }
+colored = "2.0"
+data-encoding = "2.4"
+env_logger = "^0.10"
+log = "0.4"
+pretty_assertions = "1.4"
+ring = "0.17"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+teleform = { path = "crates/teleform" }
+teleform-derive = { version = "0.1.0", path = "crates/teleform-derive" }
+tokio = { version = "1", features = ["full"] }
