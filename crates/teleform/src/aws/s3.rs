@@ -11,6 +11,8 @@ use crate::{self as tele, Local, TeleSync};
 pub struct Bucket {
     pub acl: Local<String>,
     pub bucket_name: Local<String>,
+    /// Corresponds to a [`aws_sdk_s3::types::BucketLocationConstraint`].
+    pub location_constraint: Local<String>,
 }
 
 async fn create_bucket(
@@ -19,15 +21,24 @@ async fn create_bucket(
     cfg: &SdkConfig,
     name: &str,
 ) -> anyhow::Result<()> {
+    log::trace!("create bucket={bucket:?}, apply={apply}");
     if bucket.bucket_name.is_empty() {
         log::warn!("bucket was created without a name - using the resource name");
         bucket.bucket_name = name.to_string().into();
     }
+    let location =
+        aws_sdk_s3::types::BucketLocationConstraint::try_parse(&bucket.location_constraint)
+            .context("could not parse location constraint")?;
     if apply {
         let acl = aws_sdk_s3::types::BucketCannedAcl::from(bucket.acl.as_str());
         let client = aws_sdk_s3::Client::new(cfg);
         let _bucket = client
             .create_bucket()
+            .create_bucket_configuration(
+                aws_sdk_s3::types::CreateBucketConfiguration::builder()
+                    .location_constraint(location)
+                    .build(),
+            )
             .bucket(bucket.bucket_name.as_str())
             .acl(acl)
             .send()

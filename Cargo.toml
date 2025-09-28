@@ -11,6 +11,7 @@ resolver = "2"
 
 [workspace.dependencies]
 anyhow = "1.0"
+aws-sdk-cloudfront = "1.95.0"
 aws-config = "1.8.6"
 aws-sdk-acm = "1.87"
 aws-sdk-apigatewayv2 = "1.86"

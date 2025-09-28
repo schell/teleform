@@ -378,9 +378,9 @@ impl<Config> Store<Config> {
         })
     }
 
-    pub fn empty(apply: bool, cfg: Config) -> Self {
+    pub fn empty(path: impl AsRef<std::path::Path>, apply: bool, cfg: Config) -> Self {
         Store {
-            path: std::env::current_dir().unwrap().join("default_store.json"),
+            path: path.as_ref().to_path_buf(),
             apply,
             cfg,
             rez: Default::default(),
@@ -494,6 +494,11 @@ pub mod cli {
         cfg: Cfg,
         apply: bool,
     ) -> anyhow::Result<Store<Cfg>> {
+        log::debug!(
+            "creating store at {:?} with backup at {:?}",
+            store_path.as_ref(),
+            backup_store_path.as_ref()
+        );
         let store: Store<Cfg> = if store_path.as_ref().exists() {
             log::debug!(
                 "found store file - exists at: {}",
@@ -502,7 +507,7 @@ pub mod cli {
             Store::from_path(apply, cfg, store_path.as_ref()).context("cannot open store json")?
         } else {
             log::debug!("creating a new empty store");
-            Store::empty(apply, cfg)
+            Store::empty(store_path, apply, cfg)
         };
         if apply {
             log::debug!("backing up to {}", backup_store_path.as_ref().display());
