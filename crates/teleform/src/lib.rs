@@ -6,13 +6,12 @@ use colored::Colorize;
 use std::{
     cmp::Ordering,
     collections::BTreeMap,
-    future::Future,
     ops::{Deref, DerefMut},
-    pin::Pin,
 };
 
-pub use teleform_derive::TeleSync;
-pub mod aws;
+pub use teleform_derive::TeleCmp;
+// pub mod aws;
+pub mod rework;
 
 /// A remote infrastructure resource.
 #[derive(Debug, Default, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -120,7 +119,7 @@ impl<'a> From<&'a str> for Local<String> {
 pub enum Remote<T> {
     #[default]
     Unknown,
-    Remote(T),
+    Known(T),
 }
 
 /// The `TeleEither` implementation for `Remote` picks the other if `self` is unknown.
@@ -136,7 +135,7 @@ impl<T> TeleEither for Remote<T> {
 
 impl<T> From<T> for Remote<T> {
     fn from(value: T) -> Self {
-        Remote::Remote(value)
+        Remote::Known(value)
     }
 }
 
@@ -147,7 +146,7 @@ impl<T: serde::Serialize> serde::Serialize for Remote<T> {
     {
         match self {
             Remote::Unknown => serializer.serialize_none(),
-            Remote::Remote(s) => s.serialize(serializer),
+            Remote::Known(s) => s.serialize(serializer),
         }
     }
 }
@@ -158,7 +157,7 @@ impl<'de, T: serde::de::Deserialize<'de>> serde::de::Deserialize<'de> for Remote
         D: serde::Deserializer<'de>,
     {
         Ok(T::deserialize(deserializer)
-            .map(Remote::Remote)
+            .map(Remote::Known)
             .unwrap_or(Remote::Unknown))
     }
 }
@@ -167,7 +166,7 @@ impl<T: std::fmt::Display> std::fmt::Display for Remote<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Remote::Unknown => f.write_str("*unknown*"),
-            Remote::Remote(t) => t.fmt(f),
+            Remote::Known(t) => t.fmt(f),
         }
     }
 }
@@ -176,68 +175,75 @@ impl<T> Remote<T> {
     pub fn maybe_ref(&self) -> Option<&T> {
         match self {
             Remote::Unknown => None,
-            Remote::Remote(s) => Some(s),
+            Remote::Known(s) => Some(s),
         }
     }
 
     #[allow(dead_code)]
     pub fn is_known(&self) -> bool {
-        matches!(self, Remote::Remote(_))
+        matches!(self, Remote::Known(_))
     }
 }
 
-/// Synchronize an IaC definition with a stored type, mutating infrastructure to match.
-pub trait TeleSync
-where
-    Self: serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug,
-{
-    type Provider;
-
+pub trait TeleCmp {
     fn composite(self, other: Self) -> Self;
 
     fn should_recreate(&self, other: &Self) -> bool;
 
     fn should_update(&self, other: &Self) -> bool;
+}
 
-    fn create<'a>(
-        &'a mut self,
-        apply: bool,
-        helper: &'a Self::Provider,
-        name: &'a str,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + 'a>>;
+/// Synchronize an IaC definition with a stored type, mutating infrastructure to match.
+#[allow(async_fn_in_trait)]
+pub trait TeleSync
+where
+    Self: TeleCmp + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug,
+{
+    /// The resources used to communicate with the infrastructure provider.
+    type Provider;
 
-    fn create_finalize<'a>(
-        &'a mut self,
-        _apply: bool,
-        _helper: &'a Self::Provider,
-        _name: &'a str,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + 'a>> {
-        Box::pin(async { Ok(()) })
+    fn create(
+        &mut self,
+        helper: &Self::Provider,
+        name: &str,
+    ) -> impl std::future::Future<Output = anyhow::Result<()>>;
+
+    fn create_finalize(
+        &mut self,
+        _helper: &Self::Provider,
+        _name: &str,
+    ) -> impl std::future::Future<Output = anyhow::Result<()>> {
+        async { Ok(()) }
     }
 
-    fn update<'a>(
-        &'a mut self,
-        apply: bool,
-        helper: &'a Self::Provider,
-        name: &'a str,
-        previous: &'a Self,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + 'a>>;
+    fn update(
+        &mut self,
+        helper: &Self::Provider,
+        name: &str,
+        previous: &Self,
+    ) -> impl std::future::Future<Output = anyhow::Result<()>>;
 
-    fn update_finalize<'a>(
-        &'a mut self,
-        _apply: bool,
-        _helper: &'a Self::Provider,
-        _name: &'a str,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + 'a>> {
-        Box::pin(async { Ok(()) })
+    fn update_finalize(
+        &mut self,
+        _helper: &Self::Provider,
+        _name: &str,
+    ) -> impl std::future::Future<Output = anyhow::Result<()>> {
+        async { Ok(()) }
     }
 
-    fn delete<'a>(
-        &'a self,
-        apply: bool,
-        helper: &'a Self::Provider,
-        name: &'a str,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + 'a>>;
+    fn delete(
+        &self,
+        helper: &Self::Provider,
+        name: &str,
+    ) -> impl std::future::Future<Output = anyhow::Result<()>>;
+}
+
+pub struct DummyProvider;
+
+impl AsRef<DummyProvider> for DummyProvider {
+    fn as_ref(&self) -> &DummyProvider {
+        self
+    }
 }
 
 /// An IaC store.
@@ -259,8 +265,7 @@ impl<Config> Store<Config> {
     /// This is useful for adding resources created outside of teleform.
     pub fn insert<Data>(&mut self, name: impl Into<String>, data: Data) -> anyhow::Result<()>
     where
-        Config: AsRef<<Data as TeleSync>::Provider>,
-        Data: std::any::Any + TeleSync,
+        Data: std::any::Any + TeleSync<Provider = Config>,
     {
         let name = name.into();
         let json = serde_json::to_string_pretty(&data)?;
@@ -279,13 +284,12 @@ impl<Config> Store<Config> {
         mut data: Data,
     ) -> anyhow::Result<Data>
     where
-        Config: AsRef<<Data as TeleSync>::Provider>,
-        Data: std::any::Any + TeleSync + Clone,
+        Data: std::any::Any + TeleSync<Provider = Config> + Clone,
     {
         use colored::*;
 
         let name = name.into();
-        let provider: &Data::Provider = self.cfg.as_ref();
+        let provider: &Data::Provider = &self.cfg;
         let mut created = false;
         let mut updated = false;
         log::trace!("sync'ing {name}");
@@ -305,24 +309,29 @@ impl<Config> Store<Config> {
             if existing_data.should_recreate(&data) {
                 log::info!("recreating {name}:\n{comparison}");
                 log::info!("deleting {name}");
-                data.delete(self.apply, provider, &name).await?;
                 if self.apply {
+                    data.delete(provider, &name).await?;
                     log::info!("...deleted");
+                } else {
+                    log::info!("...but 'apply' is false");
                 }
                 log::info!("creating {name}");
-                data.create(self.apply, provider, &name).await?;
-                created = true;
                 if self.apply {
+                    data.create(provider, &name).await?;
                     log::info!("...created");
+                } else {
+                    log::info!("...but 'apply' is false");
                 }
+                created = true;
             } else if existing_data.should_update(&data) {
                 log::info!("updating {name}:\n{comparison}");
-                data.update(self.apply, provider, &name, &existing_data)
-                    .await?;
-                updated = true;
                 if self.apply {
+                    data.update(provider, &name, &existing_data).await?;
                     log::info!("...updated");
+                } else {
+                    log::info!("but 'apply' is false");
                 }
+                updated = true;
             } else {
                 data = existing_data;
             }
@@ -335,11 +344,14 @@ impl<Config> Store<Config> {
                 "creating {name}:\n{}",
                 serde_json::to_string_pretty(&data).context("json")?.green()
             );
-            data.create(self.apply, provider, &name).await?;
-            created = true;
             if self.apply {
+                data.create(provider, &name).await?;
                 log::info!("...created");
+            } else {
+                log::info!("...but 'apply' is false");
             }
+            created = true;
+
             let mut rez = Rez::new(data.clone())?;
             rez.use_count += 1;
             self.rez.insert(name.clone(), rez);
@@ -348,15 +360,23 @@ impl<Config> Store<Config> {
             self.save(&self.path)?;
         }
         if created {
-            data.create_finalize(self.apply, provider, &name).await?;
+            log::info!("finalizing creation");
             if self.apply {
+                data.create_finalize(provider, &name).await?;
                 self.save(&self.path)?;
+                log::info!("...finialized");
+            } else {
+                log::info!("...but 'apply' is false");
             }
         }
         if updated {
-            data.update_finalize(self.apply, provider, &name).await?;
+            log::info!("finalizing update");
             if self.apply {
+                data.update_finalize(provider, &name).await?;
                 self.save(&self.path)?;
+                log::info!("...finalized");
+            } else {
+                log::info!("but 'apply' is false");
             }
         }
         Ok(data)
@@ -402,8 +422,7 @@ impl<Config> Store<Config> {
 
     pub async fn prune<Data>(&mut self) -> anyhow::Result<()>
     where
-        Config: AsRef<Data::Provider>,
-        Data: TeleSync,
+        Data: TeleSync<Provider = Config>,
     {
         let to_prune = self.get_prunes();
         if !to_prune.is_empty() {
@@ -425,7 +444,7 @@ impl<Config> Store<Config> {
                 match serde_json::from_value::<Data>(rez.data.clone()) {
                     Ok(data) => {
                         if self.apply {
-                            data.delete(self.apply, self.cfg.as_ref(), &name).await?;
+                            data.delete(&self.cfg, &name).await?;
                             self.save(&self.path)?;
                             log::info!("...deleted");
                         }
@@ -443,13 +462,14 @@ impl<Config> Store<Config> {
     /// Delete the resource with the given name, if any.
     pub async fn _delete<Data>(&mut self, name: impl Into<String>) -> anyhow::Result<()>
     where
-        Config: AsRef<Data::Provider>,
-        Data: TeleSync,
+        Data: TeleSync<Provider = Config>,
     {
         let name = name.into();
         if let Some(rez) = self.rez.remove(&name) {
             let data: Data = serde_json::from_value(rez.data)?;
-            data.delete(self.apply, self.cfg.as_ref(), &name).await?;
+            if self.apply {
+                data.delete(&self.cfg, &name).await?;
+            }
         } else {
             log::warn!("cannot delete {name} - no such resource");
         }
@@ -575,5 +595,70 @@ pub mod cli {
         let reader = std::io::BufReader::new(input);
         let digest = sha256(reader)?;
         Ok(Some(data_encoding::HEXUPPER.encode(digest.as_ref())))
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use random::Source;
+
+    use super::*;
+
+    #[tokio::test]
+    #[allow(unused_variables)]
+    async fn works() {
+        use crate as tele;
+        let _ = env_logger::builder().is_test(true).try_init();
+
+        #[derive(Clone, Debug, TeleCmp, serde::Deserialize, serde::Serialize)]
+        struct Infra {
+            name: Local<String>,
+            id: Remote<String>,
+        }
+
+        impl TeleSync for Infra {
+            type Provider = DummyProvider;
+
+            async fn create(&mut self, helper: &Self::Provider, name: &str) -> anyhow::Result<()> {
+                let mut rng = random::default(666);
+                let mut id = String::new();
+                for _ in 0.. {
+                    if let Some(char) = char::from_u32(rng.read()) {
+                        id = format!("{id}{char}");
+                        if id.len() == 16 {
+                            break;
+                        }
+                    }
+                }
+                self.id = Remote::Known(id);
+                Ok(())
+            }
+
+            async fn update(
+                &mut self,
+                helper: &Self::Provider,
+                name: &str,
+                previous: &Self,
+            ) -> anyhow::Result<()> {
+                todo!()
+            }
+
+            async fn delete(&self, helper: &Self::Provider, name: &str) -> anyhow::Result<()> {
+                todo!()
+            }
+        }
+
+        let mut store = Store::empty("store.json", true, DummyProvider);
+
+        let infra_a = store
+            .sync(
+                "infra-a",
+                Infra {
+                    name: Local("infra_a".into()),
+                    id: Remote::Unknown,
+                },
+            )
+            .await
+            .unwrap();
     }
 }

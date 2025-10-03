@@ -17,6 +17,28 @@
 | | How to accept possible infrastructure changes from unpriviledged devs? |
 | | You have to wait for compile times to sync infrastructure |
 
+## Mon Sep 29 2025
+
+I'm attempting a rework that models the problem a little tighter.
+
+* defining
+  - I want to define in code, and pair with a local cache of a previous syncing
+* diffing
+  - I want to generate a diff that can be used to sync, with an inherent order
+* syncing
+
+I ended up just splitting out the `TeleSync` trait into two traits, `TeleSync` and `TeleCmp`.
+
+It would be nice to do the following in the future:
+
+1. Be able to define the entire stack of infrastructure in one top-level struct.
+2. Diff the in-memory definition of the struct against a cached struct on the filesystem,
+   this returns a DAG.
+3. Inspect the DAG. Store the DAG?. Execute the DAG. This returns a new struct.
+4. Persist the new struct to the filesystem.
+5. Allows import?
+6. Idempotent apply.
+
 ## Thu Oct 19 2023
 
 It was the ARN for the "add_permissions" call! You have to specify the *version*

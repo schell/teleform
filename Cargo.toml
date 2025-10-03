@@ -1,8 +1,8 @@
 [workspace]
 
 members = [
-    "crates/example",
-    "crates/example-lambda",
+    # "crates/example",
+    # "crates/example-lambda",
     "crates/teleform",
     "crates/teleform-derive",
 ]
@@ -25,12 +25,16 @@ aws-sdk-secretsmanager = "1.88"
 clap = { version = "^4.4", features = ["cargo", "derive", "env"] }
 colored = "2.0"
 data-encoding = "2.4"
-env_logger = "^0.10"
+dagga = { path = "../dagga" } #0.2.1"
+env_logger = "0.10"
 log = "0.4"
 pretty_assertions = "1.4"
+random = "0.14.0"
 ring = "0.17"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+snafu = "0.8.3"
 teleform = { path = "crates/teleform" }
 teleform-derive = { version = "0.1.0", path = "crates/teleform-derive" }
 tokio = { version = "1", features = ["full"] }
+toml = "0.9.7"

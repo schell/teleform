@@ -178,6 +178,44 @@ fn get_impl_details(attrs: &[Attribute]) -> syn::Result<ImplDetails> {
     Ok(details)
 }
 
+#[proc_macro_derive(TeleCmp, attributes(tele))]
+pub fn derive_telecmp(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let input: DeriveInput = syn::parse_macro_input!(input);
+    let name = &input.ident;
+
+    let Composite {
+        function_body: composite,
+        where_constraints,
+    } = match get_composite(&input) {
+        Ok(c) => c,
+        Err(e) => return e.into_compile_error().into(),
+    };
+    let (should_recreate, should_update) = match get_should_recreate_update(&input.data) {
+        Ok(x) => x,
+        Err(e) => return e.into_compile_error().into(),
+    };
+
+    let output = quote! {
+        impl tele::TeleCmp for #name
+        where
+            #(#where_constraints),*
+        {
+            fn composite(self, other: Self) -> Self {
+                #composite
+            }
+
+            fn should_recreate(&self, other: &Self) -> bool {
+                #should_recreate
+            }
+
+            fn should_update(&self, other: &Self) -> bool {
+                #should_update
+            }
+        }
+    };
+    output.into()
+}
+
 #[proc_macro_derive(TeleSync, attributes(tele))]
 pub fn derive_telesync(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input: DeriveInput = syn::parse_macro_input!(input);
