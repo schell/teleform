@@ -11,7 +11,7 @@ use std::{
 
 pub use teleform_derive::TeleCmp;
 // pub mod aws;
-pub mod rework;
+pub mod v2;
 
 /// A remote infrastructure resource.
 #[derive(Debug, Default, Clone, PartialEq, serde::Serialize, serde::Deserialize)]

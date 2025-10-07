@@ -9,7 +9,7 @@ pub mod remote;
 use remote::Remote;
 use tokio::io::AsyncWriteExt;
 
-use crate::rework::remote::{Migrated, RemoteVar, Remotes};
+use crate::v2::remote::{Migrated, RemoteVar, Remotes};
 
 pub trait UserError: core::fmt::Display + core::fmt::Debug + 'static {}
 impl<T: core::fmt::Display + core::fmt::Debug + 'static> UserError for T {}

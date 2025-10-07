@@ -11,7 +11,7 @@ use std::{
 
 use snafu::OptionExt;
 
-use crate::v2::{Action, DowncastSnafu};
+use crate::rework::{Action, DowncastSnafu};
 
 use super::{Dependencies, Error, RemoteUnresolvedSnafu, Resource, StoreResource};
 
