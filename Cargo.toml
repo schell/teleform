@@ -37,4 +37,3 @@ snafu = "0.8.3"
 teleform = { path = "crates/teleform" }
 teleform-derive = { version = "0.1.0", path = "crates/teleform-derive" }
 tokio = { version = "1", features = ["full"] }
-toml = "0.9.7"

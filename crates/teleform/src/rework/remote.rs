@@ -5,12 +5,13 @@
 
 use std::{
     collections::HashMap,
+    ops::Deref,
     sync::{Arc, Mutex},
 };
 
 use snafu::OptionExt;
 
-use crate::rework::{DowncastSnafu, MissingResourceSnafu};
+use crate::rework::{Action, DowncastSnafu};
 
 use super::{Dependencies, Error, RemoteUnresolvedSnafu, Resource, StoreResource};
 
@@ -97,7 +98,7 @@ where
     T: Resource,
 {
     pub(crate) fn new(resource: &StoreResource<T, T::Output>, map: fn(&T::Output) -> X) -> Self {
-        log::debug!(
+        log::trace!(
             "creating mapping of a remote resource '{}'",
             resource.remote_var.depends_on
         );
@@ -124,14 +125,14 @@ where
                 depends_on,
                 last_known_value,
             } => {
-                log::debug!("remote var returning last known value: {last_known_value:?}");
+                log::trace!("remote var returning last known value: {last_known_value:?}");
                 Ok(last_known_value.clone().context(RemoteUnresolvedSnafu {
                     ty: core::any::type_name::<X>(),
                     depends_on: depends_on.clone(),
                 })?)
             }
             RemoteInner::Var { map, var } => {
-                let value = var.get().ok().context(RemoteUnresolvedSnafu {
+                let value = var.get().context(RemoteUnresolvedSnafu {
                     ty: core::any::type_name::<X>(),
                     depends_on: var.depends_on.clone(),
                 })?;
@@ -141,60 +142,54 @@ where
     }
 }
 
-// The state of a remote value.
-#[derive(Debug, Default, Clone)]
-pub(crate) enum Status<T> {
-    #[default]
-    None,
-    Ok(T),
-    Stale(T),
-}
-
-impl<T> Status<T> {
-    pub fn ok(self) -> Option<T> {
-        if let Self::Ok(t) = self {
-            Some(t)
-        } else {
-            None
-        }
-    }
-}
-
 #[derive(Debug)]
 pub(crate) struct RemoteVar<T> {
     depends_on: String,
-    inner: Arc<Mutex<Status<T>>>,
+    action: Action,
+    inner: Arc<Mutex<Option<T>>>,
 }
 
 impl<T> Clone for RemoteVar<T> {
     fn clone(&self) -> Self {
         Self {
             depends_on: self.depends_on.clone(),
+            action: self.action,
             inner: self.inner.clone(),
         }
     }
 }
 
 impl<T: Clone> RemoteVar<T> {
-    pub fn get(&self) -> Status<T> {
+    pub fn get(&self) -> Option<T> {
         self.inner.lock().unwrap().clone()
     }
 
-    pub fn set(&self, status: Status<T>) {
-        *self.inner.lock().unwrap() = status;
+    pub fn set(&self, value: Option<T>) {
+        *self.inner.lock().unwrap() = value;
     }
+}
+
+pub(crate) struct Var {
+    pub(crate) key: usize,
+    pub(crate) ty: &'static str,
+    pub(crate) action: Action,
+    pub(crate) remote: Box<dyn core::any::Any>,
 }
 
 #[derive(Default)]
 pub(crate) struct Remotes {
     /// Map of resource name to key + RemoteVar<T>
-    vars: HashMap<String, (usize, &'static str, Box<dyn core::any::Any>)>,
+    vars: HashMap<String, Var>,
 }
 
 impl core::fmt::Display for Remotes {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for (name, (rez, ty, _)) in self.vars.iter() {
-            f.write_fmt(format_args!("name:'{name}' key:{rez} ty:{ty}\n"))?;
+        for (name, var) in self.vars.iter() {
+            f.write_fmt(format_args!(
+                "name:'{name}' key:{rez} ty:{ty}\n",
+                rez = var.key,
+                ty = var.ty,
+            ))?;
         }
         Ok(())
     }
@@ -206,34 +201,37 @@ impl Remotes {
     /// ## Errors
     /// Errs if a var by the given name exists but is of a different type than the type
     /// requested.
-    pub fn get_var<T: std::any::Any>(
+    pub fn dequeue_var<T: std::any::Any>(
         &mut self,
         id: &str,
+        action: Action,
     ) -> Result<(RemoteVar<T>, usize, &'static str), Error> {
-        log::debug!(
+        log::trace!(
             "requested remote var '{id}' of type {}",
             core::any::type_name::<T>()
         );
         let next_k = self.vars.len();
-        let (k, ty, any_var) = self.vars.entry(id.to_owned()).or_insert_with(|| {
-            log::debug!("   but one doesn't exist, so we're creating a new entry '{next_k}'");
-            (
-                next_k,
-                std::any::type_name::<T>(),
-                Box::new(RemoteVar::<T> {
+        let var = self.vars.entry(id.to_owned()).or_insert_with(|| {
+            log::trace!("   but one doesn't exist, so we're creating a new entry '{next_k}'");
+            Var {
+                key: next_k,
+                ty: std::any::type_name::<T>(),
+                action,
+                remote: Box::new(RemoteVar::<T> {
                     depends_on: id.to_owned(),
+                    action,
                     inner: Default::default(),
                 }),
-            )
+            }
         });
-        let var: &RemoteVar<T> = any_var.downcast_ref().context(DowncastSnafu)?;
-        Ok((var.clone(), *k, ty))
+        let remote: &RemoteVar<T> = var.remote.downcast_ref().context(DowncastSnafu)?;
+        Ok((remote.clone(), var.key, var.ty))
     }
 
     /// Returns the name of a resource by key
     pub fn get_name_by_rez(&self, rez: usize) -> Option<String> {
-        for (name, (cmp_rez, _, _)) in self.vars.iter() {
-            if rez == *cmp_rez {
+        for (name, var) in self.vars.iter() {
+            if rez == var.key {
                 return Some(name.clone());
             }
         }
@@ -241,13 +239,94 @@ impl Remotes {
     }
 
     /// Returns the key of the resource with the given name.
-    pub fn get_rez(&self, id: &str) -> Result<usize, Error> {
-        Ok(self
-            .vars
-            .get(id)
-            .context(MissingResourceSnafu {
-                name: id.to_owned(),
-            })?
-            .0)
+    pub fn get(&self, id: &str) -> Option<&Var> {
+        self.vars.get(id)
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+enum MigratedProxy<T> {
+    Remote(RemoteProxy<T>),
+    Local(T),
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+#[serde(try_from = "MigratedProxy<T>")]
+pub struct Migrated<T>(pub(crate) T);
+
+impl<T> Deref for Migrated<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T> TryFrom<MigratedProxy<T>> for Migrated<T> {
+    type Error = &'static str;
+
+    fn try_from(value: MigratedProxy<T>) -> Result<Self, Self::Error> {
+        log::trace!("read a migrated {}", std::any::type_name::<T>());
+        match value {
+            MigratedProxy::Remote(RemoteProxy {
+                depends_on: _,
+                last_known_value,
+            }) => {
+                log::trace!("  from a previous remote");
+                if let Some(value) = last_known_value {
+                    Ok(Migrated(value))
+                } else {
+                    Err("Missing last known value")
+                }
+            }
+            MigratedProxy::Local(t) => Ok(Migrated(t)),
+        }
+    }
+}
+
+impl<T: serde::Serialize> serde::Serialize for Migrated<T> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.0.serialize(serializer)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn migrate_ser() {
+        let migrated = Migrated(666u32);
+        let s = serde_json::to_string_pretty(&migrated).unwrap();
+        assert_eq!("666", &s);
+
+        let proxy = MigratedProxy::Remote(RemoteProxy {
+            depends_on: "test-bucket".into(),
+            last_known_value: Some([109, 121, 98, 117, 99, 107, 101, 116]),
+        });
+        let s = serde_json::to_string_pretty(&proxy).unwrap();
+        println!("{s}");
+    }
+
+    #[test]
+    fn migrate_de() {
+        let s = serde_json::json!({
+          "depends_on": "test-bucket",
+          "last_known_value": [
+            109,
+            121,
+            98,
+            117,
+            99,
+            107,
+            101,
+            116
+          ]
+        });
+        let _migrated: Migrated<[u8; 8]> = serde_json::from_value(s).unwrap();
     }
 }
