@@ -17,6 +17,15 @@
 | | How to accept possible infrastructure changes from unpriviledged devs? |
 | | You have to wait for compile times to sync infrastructure |
 
+## Sun 5 Oct
+
+V2 is nearly ready.
+It's based on `dagga`, so now CRUD operations are sequenced as a DAG.
+This allows the DAG to be inspected before it's executed.
+
+I'm currently wondering if maybe it would be better to ditch having a saved
+"remote" value and instead _always load the value from the platform_?
+
 ## Mon Sep 29 2025
 
 I'm attempting a rework that models the problem a little tighter.
