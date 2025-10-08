@@ -11,9 +11,9 @@ use std::{
 
 use snafu::OptionExt;
 
-use crate::rework::{Action, DowncastSnafu};
-
-use super::{Dependencies, Error, RemoteUnresolvedSnafu, Resource, StoreResource};
+use super::{
+    Action, Dependencies, DowncastSnafu, Error, RemoteUnresolvedSnafu, Resource, StoreResource,
+};
 
 #[derive(Clone, Debug)]
 enum RemoteInner<Input: Resource, X> {
@@ -172,7 +172,6 @@ impl<T: Clone> RemoteVar<T> {
 pub(crate) struct Var {
     pub(crate) key: usize,
     pub(crate) ty: &'static str,
-    pub(crate) action: Action,
     pub(crate) remote: Box<dyn core::any::Any>,
 }
 
@@ -216,7 +215,6 @@ impl Remotes {
             Var {
                 key: next_k,
                 ty: std::any::type_name::<T>(),
-                action,
                 remote: Box::new(RemoteVar::<T> {
                     depends_on: id.to_owned(),
                     action,
