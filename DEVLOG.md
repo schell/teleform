@@ -17,7 +17,23 @@
 | | How to accept possible infrastructure changes from unpriviledged devs? |
 | | You have to wait for compile times to sync infrastructure |
 
-## Sun 5 Oct
+## Thu 9 Oct 2025
+
+>  I'm currently wondering if maybe it would be better to ditch having a saved
+"remote" value and instead _always load the value from the platform_?
+
+No. I think it would be good to have a "sync" function that synchronizes a "remote"
+with the platform, but having it always load would put undo burden on the infrastructure
+maintainer to update along with the platform API.
+
+> I think it would be good to have a "sync" function that synchronizes a "remote"
+with the platform
+
+Actually it might be easier for the infrastructure maintainer to use a sentinel 
+value that can be easily changed to force an update. That would be more
+trackable in git, as well.
+
+## Sun 5 Oct 2025
 
 V2 is nearly ready.
 It's based on `dagga`, so now CRUD operations are sequenced as a DAG.
