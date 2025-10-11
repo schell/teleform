@@ -2,6 +2,14 @@
 name = "teleform"
 version = "0.1.0"
 edition = "2021"
+description = "Teleform is a Rust library for Infrastructure as Code (IaC), providing a flexible alternative to Terraform and Pulumi."
+license = "MIT"
+repository = "https://github.com/schell/teleform"
+homepage = "https://github.com/schell/teleform"
+documentation = "https://docs.rs/teleform"
+keywords = ["iac", "infrastructure", "rust", "terraform", "pulumi"]
+categories = ["dev-tools", "infrastructure"]
+readme = "README.md"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
