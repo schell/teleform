@@ -9,7 +9,7 @@ homepage = "https://github.com/schell/teleform"
 documentation = "https://docs.rs/teleform"
 keywords = ["iac", "infrastructure", "rust", "terraform", "pulumi"]
 categories = ["dev-tools", "infrastructure"]
-readme = "README.md"
+readme = "../../README.md"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
