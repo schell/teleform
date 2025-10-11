@@ -18,21 +18,9 @@ name = "tele"
 
 [dependencies]
 anyhow.workspace = true
-aws-config.workspace = true
-aws-sdk-acm.workspace = true
-aws-sdk-apigatewayv2.workspace = true
-aws-sdk-dynamodb.workspace = true
-aws-sdk-iam.workspace = true
-aws-sdk-lambda.workspace = true
-aws-sdk-rds.workspace = true
-aws-sdk-route53.workspace = true
-aws-sdk-s3.workspace = true
-aws-sdk-secretsmanager.workspace = true
-colored.workspace = true
 dagga.workspace = true
 data-encoding.workspace = true
 log.workspace = true
-pretty_assertions.workspace = true
 ring.workspace = true
 serde.workspace = true 
 serde_json.workspace = true
