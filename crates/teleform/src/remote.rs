@@ -4,6 +4,7 @@
 //! or reading a resource from a provider.
 
 use std::{
+    any::Any,
     collections::HashMap,
     ops::Deref,
     sync::{Arc, Mutex},
@@ -11,32 +12,58 @@ use std::{
 
 use snafu::OptionExt;
 
-use crate::v2::HasDependencies;
+use crate::HasDependencies;
 
 use super::{
     Action, Dependencies, DowncastSnafu, Error, RemoteUnresolvedSnafu, Resource, StoreResource,
 };
 
-#[derive(Clone, Debug)]
-enum RemoteInner<Input: Resource, X> {
+type VarFn<X> = Arc<dyn Fn(&Arc<dyn Any>) -> Result<X, Error>>;
+
+#[derive(Clone)]
+enum RemoteInner<X> {
     Init {
         depends_on: String,
         last_known_value: Option<X>,
     },
     Var {
-        map: fn(&Input::Output) -> X,
-        var: RemoteVar<Input::Output>,
+        depends_on: String,
+        map: VarFn<X>,
+        // RemoteVar<T::Output>
+        var: Arc<dyn Any>,
     },
 }
 
-#[derive(Clone, Debug)]
-pub struct Remote<Input: Resource, X> {
-    inner: RemoteInner<Input, X>,
+impl<X: std::fmt::Debug> std::fmt::Debug for RemoteInner<X> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Init {
+                depends_on,
+                last_known_value,
+            } => f
+                .debug_struct("Init")
+                .field("depends_on", depends_on)
+                .field("last_known_value", last_known_value)
+                .finish(),
+            Self::Var {
+                depends_on,
+                map: _,
+                var,
+            } => f
+                .debug_struct("Var")
+                .field("depends_on", depends_on)
+                .field("var", var)
+                .finish(),
+        }
+    }
 }
 
-impl<Input: Resource, X: Clone + core::fmt::Debug + PartialEq + 'static> PartialEq
-    for Remote<Input, X>
-{
+#[derive(Clone, Debug)]
+pub struct Remote<X> {
+    inner: RemoteInner<X>,
+}
+
+impl<X: Clone + core::fmt::Debug + PartialEq + 'static> PartialEq for Remote<X> {
     fn eq(&self, other: &Self) -> bool {
         if let Ok(here) = self.get() {
             if let Ok(there) = other.get() {
@@ -56,9 +83,7 @@ struct RemoteProxy<T> {
     last_known_value: Option<T>,
 }
 
-impl<Input: Resource, X: serde::Serialize + Clone + core::fmt::Debug + 'static> serde::Serialize
-    for Remote<Input, X>
-{
+impl<X: serde::Serialize + Clone + core::fmt::Debug + 'static> serde::Serialize for Remote<X> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -67,16 +92,14 @@ impl<Input: Resource, X: serde::Serialize + Clone + core::fmt::Debug + 'static> 
             last_known_value: self.get().ok(),
             depends_on: match &self.inner {
                 RemoteInner::Init { depends_on, .. } => depends_on.clone(),
-                RemoteInner::Var { var, .. } => var.depends_on.clone(),
+                RemoteInner::Var { depends_on, .. } => depends_on.clone(),
             },
         };
         proxy.serialize(serializer)
     }
 }
 
-impl<'de, Input: Resource, X: serde::Deserialize<'de>> serde::Deserialize<'de>
-    for Remote<Input, X>
-{
+impl<'de, X: serde::Deserialize<'de>> serde::Deserialize<'de> for Remote<X> {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -95,19 +118,32 @@ impl<'de, Input: Resource, X: serde::Deserialize<'de>> serde::Deserialize<'de>
     }
 }
 
-impl<T, X: Clone + core::fmt::Debug> Remote<T, X>
-where
-    T: Resource,
-{
-    pub(crate) fn new(resource: &StoreResource<T, T::Output>, map: fn(&T::Output) -> X) -> Self {
+impl<X: Clone + core::fmt::Debug + 'static> Remote<X> {
+    pub(crate) fn new<T: Resource>(
+        resource: &StoreResource<T, T::Output>,
+        map: fn(&T::Output) -> X,
+    ) -> Self {
         log::trace!(
             "creating mapping of a remote resource '{}'",
             resource.remote_var.depends_on
         );
+        let depends_on = resource.remote_var.depends_on.clone();
         Self {
             inner: RemoteInner::Var {
-                map,
-                var: resource.remote_var.clone(),
+                map: Arc::new({
+                    let depends_on = depends_on.clone();
+                    move |any: &Arc<dyn Any>| {
+                        // UNWRAP: safe because this is an invariant
+                        let remote_var = any.downcast_ref::<RemoteVar<T::Output>>().unwrap();
+                        let t_output = remote_var.get().context(RemoteUnresolvedSnafu {
+                            ty: core::any::type_name::<X>(),
+                            depends_on: depends_on.clone(),
+                        })?;
+                        Ok(map(&t_output))
+                    }
+                }),
+                depends_on,
+                var: Arc::new(resource.remote_var.clone()),
             },
         }
     }
@@ -124,23 +160,21 @@ where
                     depends_on: depends_on.clone(),
                 })?)
             }
-            RemoteInner::Var { map, var } => {
-                let value = var.get().context(RemoteUnresolvedSnafu {
-                    ty: core::any::type_name::<X>(),
-                    depends_on: var.depends_on.clone(),
-                })?;
-                Ok(map(&value))
-            }
+            RemoteInner::Var {
+                map,
+                var,
+                depends_on: _,
+            } => map(var),
         }
     }
 }
 
-impl<T: Resource, X> HasDependencies for Remote<T, X> {
+impl<X> HasDependencies for Remote<X> {
     fn dependencies(&self) -> Dependencies {
         Dependencies {
             inner: vec![match &self.inner {
                 RemoteInner::Init { depends_on, .. } => depends_on.clone(),
-                RemoteInner::Var { var, .. } => var.depends_on.clone(),
+                RemoteInner::Var { depends_on, .. } => depends_on.clone(),
             }],
         }
     }
@@ -204,7 +238,7 @@ impl Remotes {
     /// ## Errors
     /// Errs if a var by the given name exists but is of a different type than the type
     /// requested.
-    pub fn dequeue_var<T: std::any::Any>(
+    pub fn dequeue_var<T: Any>(
         &mut self,
         id: &str,
         action: Action,

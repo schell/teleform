@@ -1,6 +1,6 @@
 //! Implementations of HasDependencies for primitives.
 
-use crate::v2::{self as tele, HasDependencies};
+use crate::{self as tele, HasDependencies};
 
 macro_rules! go {
     ($type: ty) => {

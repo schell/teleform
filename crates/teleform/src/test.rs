@@ -1,4 +1,4 @@
-use crate::v2::{self as tele, *};
+use crate::{self as tele, *};
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 struct LocalBucket {
@@ -55,7 +55,7 @@ impl Resource for LocalBucket {
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, HasDependencies)]
 struct LocalService {
-    bucket_arn: Remote<LocalBucket, [u8; 8]>,
+    bucket_arn: Remote<[u8; 8]>,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -231,10 +231,12 @@ async fn sanity() {
         log::info!("running plan: \n{}", store.get_schedule_string().unwrap());
 
         let legend = store.get_graph_legend().unwrap();
+        println!("{}", store.get_schedule_string().unwrap());
         assert_eq!(
-            3,
+            2,
             legend.schedule.batches.len(),
-            "update should be scheduled into 3 batches: 1 update and 2 load 3 storage"
+            "update should be scheduled into 2 batches: \
+            1 update in one batch and 2 loads in another"
         );
         store.apply().await.unwrap();
     }
