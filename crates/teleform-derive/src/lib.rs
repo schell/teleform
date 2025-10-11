@@ -4,6 +4,8 @@ use std::collections::HashSet;
 use quote::quote;
 use syn::{Attribute, Data, DataStruct, DeriveInput, Fields, FieldsNamed};
 
+mod v2;
+
 struct Composite {
     function_body: proc_macro2::TokenStream,
     where_constraints: Vec<proc_macro2::TokenStream>,
@@ -216,6 +218,11 @@ pub fn derive_telecmp(input: proc_macro::TokenStream) -> proc_macro::TokenStream
     output.into()
 }
 
+#[proc_macro_derive(HasDependencies)]
+pub fn derive_has_dependencies(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    v2::derive_has_dependencies(input)
+}
+
 #[proc_macro_derive(TeleSync, attributes(tele))]
 pub fn derive_telesync(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input: DeriveInput = syn::parse_macro_input!(input);
@@ -348,4 +355,9 @@ pub fn derive_telesync(input: proc_macro::TokenStream) -> proc_macro::TokenStrea
         }
     };
     output.into()
+}
+
+#[proc_macro]
+pub fn impl_has_dependencies_tuples(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    v2::impl_has_dependencies_tuples(input)
 }

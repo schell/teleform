@@ -1,4 +1,4 @@
-use super::*;
+use crate::v2::{self as tele, *};
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 struct LocalBucket {
@@ -11,7 +11,7 @@ impl HasDependencies for LocalBucket {
     }
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 struct RemoteBucket {
     arn: [u8; 8],
 }
@@ -29,6 +29,10 @@ impl Resource for LocalBucket {
             *slot = u32::from(c) as u8;
         }
         Ok(RemoteBucket { arn })
+    }
+
+    async fn read(&self, provider: &Self::Provider) -> Result<Self::Output, Self::Error> {
+        self.create(provider).await
     }
 
     async fn update(
@@ -49,18 +53,12 @@ impl Resource for LocalBucket {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, HasDependencies)]
 struct LocalService {
     bucket_arn: Remote<LocalBucket, [u8; 8]>,
 }
 
-impl HasDependencies for LocalService {
-    fn dependencies(&self) -> Dependencies {
-        self.bucket_arn.depends_on()
-    }
-}
-
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 struct RemoteService {
     service_id: String,
 }
@@ -75,6 +73,10 @@ impl Resource for LocalService {
         Ok(RemoteService {
             service_id: format!("service-{}", bucket_arn.map(|c| c.to_string()).join("")),
         })
+    }
+
+    async fn read(&self, provider: &Self::Provider) -> Result<Self::Output, Self::Error> {
+        self.create(provider).await
     }
 
     async fn update(
@@ -271,6 +273,10 @@ async fn sanity() {
             Ok(RemoteService {
                 service_id: format!("service-{}", bucket_arn.map(|c| c.to_string()).join("")),
             })
+        }
+
+        async fn read(&self, provider: &Self::Provider) -> Result<Self::Output, Self::Error> {
+            self.create(provider).await
         }
 
         async fn update(

@@ -4,12 +4,14 @@ use std::{future::Future, ops::Deref, pin::Pin};
 
 use dagga::{dot::DagLegend, Node, Schedule};
 use snafu::prelude::*;
-
-pub mod remote;
-use remote::Remote;
 use tokio::io::AsyncWriteExt;
 
-use crate::v2::remote::{Migrated, RemoteVar, Remotes};
+pub use teleform_derive::HasDependencies;
+
+pub mod remote;
+use remote::{Migrated, Remote, RemoteVar, Remotes};
+
+mod has_dependencies_impl;
 
 pub trait UserError: core::fmt::Display + core::fmt::Debug + 'static {}
 impl<T: core::fmt::Display + core::fmt::Debug + 'static> UserError for T {}
@@ -85,6 +87,12 @@ pub enum Error {
         error: Box<dyn UserError>,
     },
 
+    #[snafu(display("Error during '{name}' read and import: {error}"))]
+    Import {
+        name: String,
+        error: Box<dyn UserError>,
+    },
+
     #[snafu(display("Error during '{name}' update: {error}"))]
     Update {
         name: String,
@@ -99,6 +107,12 @@ pub enum Error {
 
     #[snafu(display("Missing previous remote value '{name}'"))]
     Load { name: String },
+
+    #[snafu(display(
+        "Loading '{id}' would clobber an existing value in the store file, \
+        and these values are not the same"
+    ))]
+    Clobber { id: &'static str },
 
     #[snafu(display("Could not downcast"))]
     Downcast,
@@ -134,25 +148,59 @@ pub trait Resource:
 
     /// The remote type of this resource, which we can used to fill in
     /// [`Remote`] values in other resources.
-    type Output: core::fmt::Debug + Clone + serde::Serialize + serde::de::DeserializeOwned + 'static;
+    type Output: core::fmt::Debug
+        + Clone
+        + PartialEq
+        + serde::Serialize
+        + serde::de::DeserializeOwned
+        + 'static;
 
+    #[allow(unreachable_code)]
     fn create(
         &self,
-        provider: &Self::Provider,
-    ) -> impl Future<Output = Result<Self::Output, Self::Error>>;
+        _provider: &Self::Provider,
+    ) -> impl Future<Output = Result<Self::Output, Self::Error>> {
+        unimplemented!(
+            "Resource::create is unimplemented for {}",
+            std::any::type_name::<Self>()
+        ) as Box<dyn Future<Output = Result<_, _>> + Unpin>
+    }
 
+    #[allow(unreachable_code)]
+    fn read(
+        &self,
+        _provider: &Self::Provider,
+    ) -> impl Future<Output = Result<Self::Output, Self::Error>> {
+        unimplemented!(
+            "Resource::read is unimplemented for {}",
+            std::any::type_name::<Self>()
+        ) as Box<dyn Future<Output = Result<_, _>> + Unpin>
+    }
+
+    #[allow(unreachable_code)]
     fn update(
         &self,
-        provider: &Self::Provider,
-        previous_local: &Self,
-        previous_remote: &Self::Output,
-    ) -> impl Future<Output = Result<Self::Output, Self::Error>>;
+        _provider: &Self::Provider,
+        _previous_local: &Self,
+        _previous_remote: &Self::Output,
+    ) -> impl Future<Output = Result<Self::Output, Self::Error>> {
+        unimplemented!(
+            "Resource::update is unimplemented for {}",
+            std::any::type_name::<Self>()
+        ) as Box<dyn Future<Output = Result<_, _>> + Unpin>
+    }
 
+    #[allow(unreachable_code)]
     fn delete(
         &self,
-        provider: &Self::Provider,
-        previous_remote: &Self::Output,
-    ) -> impl Future<Output = Result<(), Self::Error>>;
+        _provider: &Self::Provider,
+        _previous_remote: &Self::Output,
+    ) -> impl Future<Output = Result<(), Self::Error>> {
+        unimplemented!(
+            "Resource::delete is unimplemented for {}",
+            std::any::type_name::<Self>()
+        ) as Box<dyn Future<Output = Result<_, _>> + Unpin>
+    }
 }
 
 #[derive(Clone, Default, Debug)]
@@ -192,29 +240,35 @@ impl Dependencies {
     }
 }
 
+/// Tracks dependencies between resources.
+///
+/// This trait can be derived, and has a default implementation that
+/// reports zero dependencies.
 pub trait HasDependencies {
-    fn dependencies(&self) -> Dependencies;
+    fn dependencies(&self) -> Dependencies {
+        Dependencies::default()
+    }
 }
 
 /// `Create`, `Load` and `Update` result in a resource being added to the graph.
 ///
-/// `Store` and `Destroy` move the resource out of the graph
+/// `Destroy` moves the resource out of the graph.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Action {
-    Create,
     Load,
+    Create,
+    Read,
     Update,
-    Store,
     Destroy,
 }
 
 impl core::fmt::Display for Action {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Action::Create => "create",
             Action::Load => "load",
+            Action::Create => "create",
+            Action::Read => "read",
             Action::Update => "update",
-            Action::Store => "store",
             Action::Destroy => "destroy",
         })
     }
@@ -227,6 +281,29 @@ struct InertStoreResource {
     remote: serde_json::Value,
 }
 
+impl InertStoreResource {
+    async fn save(
+        &self,
+        resource_id: &str,
+        store_path: impl AsRef<std::path::Path>,
+    ) -> Result<(), Error> {
+        let path = store_file_path(resource_id, &store_path);
+        log::info!("storing {resource_id} to {path:?}");
+
+        let contents = serde_json::to_string_pretty(self).context(SerializeSnafu {
+            name: format!("storing {}", resource_id),
+        })?;
+
+        let mut file = tokio::fs::File::create(&path)
+            .await
+            .context(CreateFileSnafu { path: path.clone() })?;
+        file.write_all(contents.as_bytes())
+            .await
+            .context(WriteFileSnafu { path: path.clone() })?;
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct StoreResource<L, R> {
     /// Name of the resource from the user's perspective
@@ -235,6 +312,20 @@ pub struct StoreResource<L, R> {
     local_definition: L,
 
     remote_var: RemoteVar<R>,
+}
+
+impl<L, R> Deref for StoreResource<L, R> {
+    type Target = L;
+
+    fn deref(&self) -> &Self::Target {
+        &self.local_definition
+    }
+}
+
+impl<L, R> AsRef<L> for StoreResource<L, R> {
+    fn as_ref(&self) -> &L {
+        &self.local_definition
+    }
 }
 
 impl<L, R> TryFrom<StoreResource<L, R>> for InertStoreResource
@@ -259,6 +350,20 @@ where
             local,
             remote,
         })
+    }
+}
+
+impl<T> StoreResource<T, T::Output>
+where
+    T: Resource,
+    T::Output: Clone,
+{
+    /// Map a remote value to use in local definitions.
+    pub fn remote<X: Clone + core::fmt::Debug + 'static>(
+        &self,
+        f: fn(&T::Output) -> X,
+    ) -> Remote<T, X> {
+        Remote::new(self, f)
     }
 }
 
@@ -301,7 +406,32 @@ impl<Provider, T: Resource<Provider = Provider>> RunAction<'_, Provider, T> {
         } = self;
         log::info!("{action} '{resource_id}':");
 
+        async fn save<T: Resource>(
+            resource_id: &str,
+            local_definition_code: T,
+            remote_var: &RemoteVar<T::Output>,
+            store_path: impl AsRef<std::path::Path>,
+        ) -> Result<(), Error> {
+            let inert_resource = InertStoreResource {
+                name: resource_id.to_owned(),
+                local: serde_json::to_value(local_definition_code).context(SerializeSnafu {
+                    name: format!("store {resource_id}"),
+                })?,
+                remote: serde_json::to_value(
+                    remote_var.get().context(LoadSnafu { name: resource_id })?,
+                )
+                .context(SerializeSnafu {
+                    name: format!("store {resource_id} remote"),
+                })?,
+            };
+            inert_resource.save(resource_id, store_path).await?;
+            Ok(())
+        }
+
         match action {
+            Action::Load => {
+                save(resource_id, local_definition_code, &remote_var, store_path).await?;
+            }
             Action::Create => {
                 let value = local_definition_code
                     .create(provider)
@@ -311,8 +441,19 @@ impl<Provider, T: Resource<Provider = Provider>> RunAction<'_, Provider, T> {
                         error: Box::new(error),
                     })?;
                 remote_var.set(Some(value));
+                save(resource_id, local_definition_code, &remote_var, store_path).await?;
             }
-            Action::Load => {}
+            Action::Read => {
+                let value = local_definition_code
+                    .read(provider)
+                    .await
+                    .map_err(|error| Error::Create {
+                        name: resource_id.to_owned(),
+                        error: Box::new(error),
+                    })?;
+                remote_var.set(Some(value));
+                save(resource_id, local_definition_code, &remote_var, store_path).await?;
+            }
             Action::Update => {
                 let previous_local = local_definition_store.unwrap();
                 let previous_remote = remote_var.get().context(LoadSnafu { name: resource_id })?;
@@ -324,6 +465,7 @@ impl<Provider, T: Resource<Provider = Provider>> RunAction<'_, Provider, T> {
                         error: Box::new(error),
                     })?;
                 remote_var.set(Some(output));
+                save(resource_id, local_definition_code, &remote_var, store_path).await?;
             }
             Action::Destroy => {
                 log::debug!("running destroy action on {resource_id}");
@@ -348,51 +490,10 @@ impl<Provider, T: Resource<Provider = Provider>> RunAction<'_, Provider, T> {
                     .context(StoreFileDeleteSnafu { path })?;
                 remote_var.set(None);
             }
-            Action::Store => {
-                let path = store_file_path(resource_id, &store_path);
-                log::info!("storing {resource_id} to {path:?}");
-                let inert_resource = InertStoreResource {
-                    name: resource_id.to_owned(),
-                    local: serde_json::to_value(local_definition_code).context(SerializeSnafu {
-                        name: format!("store {resource_id}"),
-                    })?,
-                    remote: serde_json::to_value(
-                        remote_var.get().context(LoadSnafu { name: resource_id })?,
-                    )
-                    .context(SerializeSnafu {
-                        name: format!("store {resource_id} remote"),
-                    })?,
-                };
-                let contents =
-                    serde_json::to_string_pretty(&inert_resource).context(SerializeSnafu {
-                        name: format!("storing {}", resource_id),
-                    })?;
-
-                let mut file = tokio::fs::File::create(&path)
-                    .await
-                    .context(CreateFileSnafu { path: path.clone() })?;
-                file.write_all(contents.as_bytes())
-                    .await
-                    .context(WriteFileSnafu { path: path.clone() })?;
-            }
         }
 
         log::info!("  success!");
         Ok(())
-    }
-}
-
-impl<T> StoreResource<T, T::Output>
-where
-    T: Resource,
-    T::Output: Clone,
-{
-    /// Map a remote value to use in local definitions.
-    pub fn remote<X: Clone + core::fmt::Debug + 'static>(
-        &self,
-        f: fn(&T::Output) -> X,
-    ) -> Remote<T, X> {
-        Remote::new(self, f)
     }
 }
 
@@ -490,42 +591,24 @@ impl<P: 'static> Store<P> {
         }
     }
 
-    fn read<T>(&self, id: &'static str) -> Result<(T, T::Output), Error>
+    fn read_file<T>(&self, id: &'static str) -> Result<(T, T::Output), Error>
     where
         T: Resource<Provider = P>,
     {
         Self::read_from_store(&self.path, id)
     }
 
-    /// Defines a resource.
-    ///
-    /// Produces two graph nodes, one of `Create | Load | Update` and then a `Store`.
-    pub fn resource<T>(
+    fn define_resource<T>(
         &mut self,
         id: &'static str,
         local_definition: T,
+        action: Action,
+        stored_definition: Option<T>,
+        output: Option<T::Output>,
     ) -> Result<StoreResource<T, T::Output>, Error>
     where
         T: Resource<Provider = P>,
     {
-        let (action, stored_definition, output) =
-            if let Ok((stored_definition, output)) = self.read(id) {
-                // This has already been created and stored, so this is either a simple load,
-                // or an update.
-                log::debug!("  {output:?}");
-                let action = if local_definition != stored_definition {
-                    log::debug!("  local resource has changed, so this remote is now stale");
-                    Action::Update
-                } else {
-                    Action::Load
-                };
-
-                (action, Some(stored_definition), Some(output))
-            } else {
-                log::debug!("creating an empty '{id}'");
-                (Action::Create, None, None)
-            };
-
         let (remote_var, rez, _ty) = self.remotes.dequeue_var::<T::Output>(id, action)?;
         remote_var.set(output);
 
@@ -577,48 +660,16 @@ impl<P: 'static> Store<P> {
                 reads
             });
             let dag_node = match action {
-                Action::Create | Action::Load | Action::Update => {
+                Action::Create | Action::Read | Action::Load | Action::Update => {
                     log::debug!("  with result {rez}");
                     dag_node.with_result(rez)
                 }
-                Action::Store | Action::Destroy => {
+                Action::Destroy => {
                     log::debug!("  with move {rez}");
                     dag_node.with_move(rez)
                 }
             };
             self.graph.add_node(dag_node);
-        }
-
-        // This if is technically unneccessary since the function never creates a
-        // destory action, but it illustrates the point.
-        if action != Action::Destroy {
-            log::debug!("adding secondary node {} {id}", Action::Store);
-            let node_name = format!("store {id}");
-            let storage_node = dagga::Node::new(StoreNode {
-                name: node_name.clone(),
-                _remote_ty: std::any::type_name::<T>(),
-                run: Box::new({
-                    let store_path = self.path.clone();
-                    let remote_var = remote_var.clone();
-                    move |provider| {
-                        Box::pin(
-                            RunAction {
-                                provider,
-                                store_path,
-                                resource_id: id,
-                                action: Action::Store,
-                                local_definition_code,
-                                local_definition_store,
-                                remote_var,
-                            }
-                            .run(),
-                        )
-                    }
-                }),
-            })
-            .with_name(node_name)
-            .with_move(rez);
-            self.graph.add_node(storage_node);
         }
 
         Ok(StoreResource {
@@ -628,13 +679,113 @@ impl<P: 'static> Store<P> {
         })
     }
 
+    /// Defines a resource.
+    ///
+    /// Produces two graph nodes:
+    /// 1. Depending on the result of compairing `local_definition` to the one on file
+    ///    (if it exists), either:
+    ///    - creates the resource on the platform
+    ///    - updates the resource on the platform
+    ///    - loads the resource from a file
+    /// 2. Stores the resource to a file
+    ///
+    /// To import an existing resource from a platform, use [`Store::import`].
+    pub fn resource<T>(
+        &mut self,
+        id: &'static str,
+        local_definition: T,
+    ) -> Result<StoreResource<T, T::Output>, Error>
+    where
+        T: Resource<Provider = P>,
+    {
+        let (action, stored_definition, output) =
+            if let Ok((stored_definition, output)) = self.read_file(id) {
+                // This has already been created and stored, so this is either a simple load,
+                // or an update.
+                log::debug!("  {output:?}");
+                let action = if local_definition != stored_definition {
+                    log::debug!("  local resource has changed, so this remote is now stale");
+                    Action::Update
+                } else {
+                    Action::Load
+                };
+
+                (action, Some(stored_definition), Some(output))
+            } else {
+                log::debug!("creating an empty '{id}'");
+                (Action::Create, None, None)
+            };
+        self.define_resource(id, local_definition, action, stored_definition, output)
+    }
+
+    /// Defines a pre-existing resource, importing it from the platform.
+    ///
+    /// Produces two graph nodes:
+    /// 1. Import the resource from the platform, resulting in the resource
+    /// 2. Store the value to a file
+    ///
+    /// This only needs to be used once in your infrastructure command.
+    /// After the resource is imported and stored to a file it is recommended
+    /// you make a code change to use [`Store::resource`].
+    pub fn import<T>(
+        &mut self,
+        id: &'static str,
+        local_definition: T,
+    ) -> Result<StoreResource<T, T::Output>, Error>
+    where
+        T: Resource<Provider = P>,
+    {
+        self.define_resource(id, local_definition, Action::Read, None, None)
+    }
+
+    /// Defines a pre-existing resource, directly writing it to file, without
+    /// querying the platform.
+    ///
+    /// Produces two graph nodes:
+    /// 1. Load the value (noop)
+    /// 2. Store the value
+    ///
+    /// ## Errors
+    /// Errs if `force_overwrite` is `false` _and_ a stored resource already
+    /// exists. This is done to prevent accidental clobbering.
+    pub fn load<T>(
+        &mut self,
+        id: &'static str,
+        local_definition: T,
+        remote_definition: T::Output,
+        force_overwrite: bool,
+    ) -> Result<StoreResource<T, T::Output>, Error>
+    where
+        T: Resource<Provider = P>,
+    {
+        if let Ok((stored_definition, output)) = self.read_file(id) {
+            if local_definition == stored_definition && remote_definition == output {
+                if force_overwrite {
+                    log::warn!("loading '{id}' is clobbering an existing value, but `force_overwrite` is `true`");
+                } else {
+                    let err = ClobberSnafu { id }.build();
+                    log::error!("{err}");
+                    return Err(err);
+                }
+            }
+        }
+        self.define_resource(
+            id,
+            local_definition,
+            Action::Load,
+            None,
+            Some(remote_definition),
+        )
+    }
+
     /// Destroys a resource.
     pub fn destroy<T>(&mut self, id: &'static str) -> Result<DestroyResource<T>, Error>
     where
         T: Resource<Provider = P>,
     {
-        let (local, remote) = self.read::<T>(id)?;
+        let (local, remote) = self.read_file::<T>(id)?;
         let (remote_var, rez, _ty) = self.remotes.dequeue_var::<T::Output>(id, Action::Destroy)?;
+        remote_var.set(Some(remote.clone()));
         {
             // Destruction requires a load to introduce the resource (for the DAG)
             log::debug!("adding node {} {id}", Action::Load);

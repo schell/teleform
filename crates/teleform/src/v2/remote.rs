@@ -11,6 +11,8 @@ use std::{
 
 use snafu::OptionExt;
 
+use crate::v2::HasDependencies;
+
 use super::{
     Action, Dependencies, DowncastSnafu, Error, RemoteUnresolvedSnafu, Resource, StoreResource,
 };
@@ -110,15 +112,6 @@ where
         }
     }
 
-    pub fn depends_on(&self) -> Dependencies {
-        Dependencies {
-            inner: vec![match &self.inner {
-                RemoteInner::Init { depends_on, .. } => depends_on.clone(),
-                RemoteInner::Var { var, .. } => var.depends_on.clone(),
-            }],
-        }
-    }
-
     pub fn get(&self) -> Result<X, Error> {
         match &self.inner {
             RemoteInner::Init {
@@ -138,6 +131,17 @@ where
                 })?;
                 Ok(map(&value))
             }
+        }
+    }
+}
+
+impl<T: Resource, X> HasDependencies for Remote<T, X> {
+    fn dependencies(&self) -> Dependencies {
+        Dependencies {
+            inner: vec![match &self.inner {
+                RemoteInner::Init { depends_on, .. } => depends_on.clone(),
+                RemoteInner::Var { var, .. } => var.depends_on.clone(),
+            }],
         }
     }
 }
