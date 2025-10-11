@@ -6,8 +6,8 @@ license = "MIT"
 repository = "https://github.com/schell/teleform"
 homepage = "https://github.com/schell/teleform"
 documentation = "https://docs.rs/teleform-derive"
-keywords = ["iac", "infrastructure", "rust", "proc-macro"]
-categories = ["development-tools::build-utilities", "infrastructure"]
+keywords = ["iac", "infrastructure", "dag", "terraform", "pulumi"]
+categories = ["command-line-utilities", "command-line-interface", "web-programming"]
 readme = "../../README.md"
 edition = "2021"
 
