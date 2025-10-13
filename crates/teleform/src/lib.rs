@@ -173,7 +173,7 @@ pub enum Error {
         "Loading '{id}' would clobber an existing value in the store file, \
         and these values are not the same"
     ))]
-    Clobber { id: &'static str },
+    Clobber { id: String },
 
     #[snafu(display("Could not downcast"))]
     Downcast,
@@ -400,6 +400,13 @@ impl InertStoreResource {
             name: format!("storing {}", resource_id),
         })?;
 
+        // Ensure the parent directory exists
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(&parent)
+                .await
+                .context(CreateFileSnafu { path: parent })?;
+        }
+
         let mut file = tokio::fs::File::create(&path)
             .await
             .context(CreateFileSnafu { path: path.clone() })?;
@@ -416,7 +423,7 @@ pub struct StoreResource<L, R> {
     name: String,
     /// Local definition in _code_
     local_definition: L,
-
+    action: Action,
     remote_var: RemoteVar<R>,
 }
 
@@ -467,9 +474,17 @@ where
     /// Map a remote value to use in local definitions.
     pub fn remote<X: Clone + core::fmt::Debug + 'static>(
         &self,
-        f: fn(&T::Output) -> X,
+        f: impl Fn(&T::Output) -> X + 'static,
     ) -> Remote<X> {
         Remote::new(self, f)
+    }
+
+    /// Return the action that would be applied to this resource.
+    ///
+    /// This is useful if you need to trigger invalidations or anything else based on
+    /// whether a resource is created, updated, deleted, etc.
+    pub fn action(&self) -> Action {
+        self.action
     }
 }
 
@@ -489,7 +504,7 @@ struct RunAction<'a, Provider, T: Resource<Provider = Provider>> {
     provider: &'a Provider,
     store_path: std::path::PathBuf,
     /// Name of the resource being acted on, not the node name.
-    resource_id: &'static str,
+    resource_id: String,
     action: Action,
     local_definition_code: T,
     local_definition_store: Option<T>,
@@ -536,7 +551,7 @@ impl<Provider, T: Resource<Provider = Provider>> RunAction<'_, Provider, T> {
 
         match action {
             Action::Load => {
-                save(resource_id, local_definition_code, &remote_var, store_path).await?;
+                save(&resource_id, local_definition_code, &remote_var, store_path).await?;
             }
             Action::Create => {
                 let value = local_definition_code
@@ -547,7 +562,7 @@ impl<Provider, T: Resource<Provider = Provider>> RunAction<'_, Provider, T> {
                         error: Box::new(error),
                     })?;
                 remote_var.set(Some(value));
-                save(resource_id, local_definition_code, &remote_var, store_path).await?;
+                save(&resource_id, local_definition_code, &remote_var, store_path).await?;
             }
             Action::Read => {
                 let value = local_definition_code
@@ -558,20 +573,22 @@ impl<Provider, T: Resource<Provider = Provider>> RunAction<'_, Provider, T> {
                         error: Box::new(error),
                     })?;
                 remote_var.set(Some(value));
-                save(resource_id, local_definition_code, &remote_var, store_path).await?;
+                save(&resource_id, local_definition_code, &remote_var, store_path).await?;
             }
             Action::Update => {
                 let previous_local = local_definition_store.unwrap();
-                let previous_remote = remote_var.get().context(LoadSnafu { name: resource_id })?;
+                let previous_remote = remote_var.get().context(LoadSnafu {
+                    name: resource_id.clone(),
+                })?;
                 let output = local_definition_code
                     .update(provider, &previous_local, &previous_remote)
                     .await
                     .map_err(|error| Error::Update {
-                        name: resource_id.to_owned(),
+                        name: resource_id.clone(),
                         error: Box::new(error),
                     })?;
                 remote_var.set(Some(output));
-                save(resource_id, local_definition_code, &remote_var, store_path).await?;
+                save(&resource_id, local_definition_code, &remote_var, store_path).await?;
             }
             Action::Destroy => {
                 log::debug!("running destroy action on {resource_id}");
@@ -579,7 +596,9 @@ impl<Provider, T: Resource<Provider = Provider>> RunAction<'_, Provider, T> {
                 // a store definition, so we pass the store definition as the code definition.
                 // This is better IMO than having both code-local and store be optional.
                 let local_definition = local_definition_code.clone();
-                let previous_remote = remote_var.get().context(LoadSnafu { name: resource_id })?;
+                let previous_remote = remote_var.get().context(LoadSnafu {
+                    name: resource_id.clone(),
+                })?;
                 local_definition
                     .delete(provider, &previous_remote)
                     .await
@@ -589,7 +608,7 @@ impl<Provider, T: Resource<Provider = Provider>> RunAction<'_, Provider, T> {
                     })?;
 
                 log::info!("  {resource_id} is destroyed");
-                let path = store_file_path(resource_id, &store_path);
+                let path = store_file_path(&resource_id, &store_path);
                 log::info!("  removing {resource_id} store file {path:?}");
                 tokio::fs::remove_file(&path)
                     .await
@@ -697,7 +716,11 @@ impl<P: 'static> Store<P> {
         }
     }
 
-    fn read_file<T>(&self, id: &'static str) -> Result<(T, T::Output), Error>
+    pub fn provider(&self) -> &P {
+        &self.provider
+    }
+
+    fn read_file<T>(&self, id: &str) -> Result<(T, T::Output), Error>
     where
         T: Resource<Provider = P>,
     {
@@ -706,7 +729,7 @@ impl<P: 'static> Store<P> {
 
     fn define_resource<T>(
         &mut self,
-        id: &'static str,
+        id: impl AsRef<str>,
         local_definition: T,
         action: Action,
         stored_definition: Option<T>,
@@ -715,6 +738,7 @@ impl<P: 'static> Store<P> {
     where
         T: Resource<Provider = P>,
     {
+        let id = id.as_ref();
         let (remote_var, rez, _ty) = self.remotes.dequeue_var::<T::Output>(id, action)?;
         remote_var.set(output);
 
@@ -723,6 +747,7 @@ impl<P: 'static> Store<P> {
         let local_definition_store = stored_definition.clone();
         let store_path = self.path.clone();
         let run: StoreNodeRunFn<T::Provider> = Box::new({
+            let resource_id = id.to_owned();
             let remote_var = remote_var.clone();
             let local_definition_code = local_definition_code.clone();
             let local_definition_store = local_definition_store.clone();
@@ -731,7 +756,7 @@ impl<P: 'static> Store<P> {
                     RunAction {
                         provider,
                         store_path,
-                        resource_id: id,
+                        resource_id,
                         action,
                         local_definition_code,
                         local_definition_store,
@@ -781,6 +806,7 @@ impl<P: 'static> Store<P> {
         Ok(StoreResource {
             name: id.to_owned(),
             local_definition,
+            action,
             remote_var,
         })
     }
@@ -798,14 +824,15 @@ impl<P: 'static> Store<P> {
     /// To import an existing resource from a platform, use [`Store::import`].
     pub fn resource<T>(
         &mut self,
-        id: &'static str,
+        id: impl AsRef<str>,
         local_definition: T,
     ) -> Result<StoreResource<T, T::Output>, Error>
     where
         T: Resource<Provider = P>,
     {
-        let (action, stored_definition, output) =
-            if let Ok((stored_definition, output)) = self.read_file(id) {
+        let id = id.as_ref();
+        let (action, stored_definition, output) = match self.read_file(id) {
+            Ok((stored_definition, output)) => {
                 // This has already been created and stored, so this is either a simple load,
                 // or an update.
                 log::debug!("  {output:?}");
@@ -817,10 +844,16 @@ impl<P: 'static> Store<P> {
                 };
 
                 (action, Some(stored_definition), Some(output))
-            } else {
-                log::debug!("creating an empty '{id}'");
+            }
+            Err(Error::MissingStoreFile { id }) => {
+                log::debug!("store file '{id}' does not exist, creating a new resource",);
                 (Action::Create, None, None)
-            };
+            }
+            Err(e) => {
+                log::error!("could not define resource '{id}': {e}");
+                return Err(e);
+            }
+        };
         self.define_resource(id, local_definition, action, stored_definition, output)
     }
 
@@ -835,7 +868,7 @@ impl<P: 'static> Store<P> {
     /// you make a code change to use [`Store::resource`].
     pub fn import<T>(
         &mut self,
-        id: &'static str,
+        id: impl AsRef<str>,
         local_definition: T,
     ) -> Result<StoreResource<T, T::Output>, Error>
     where
@@ -856,7 +889,7 @@ impl<P: 'static> Store<P> {
     /// exists. This is done to prevent accidental clobbering.
     pub fn load<T>(
         &mut self,
-        id: &'static str,
+        id: impl AsRef<str>,
         local_definition: T,
         remote_definition: T::Output,
         force_overwrite: bool,
@@ -864,12 +897,13 @@ impl<P: 'static> Store<P> {
     where
         T: Resource<Provider = P>,
     {
+        let id = id.as_ref();
         if let Ok((stored_definition, output)) = self.read_file(id) {
             if local_definition == stored_definition && remote_definition == output {
                 if force_overwrite {
                     log::warn!("loading '{id}' is clobbering an existing value, but `force_overwrite` is `true`");
                 } else {
-                    let err = ClobberSnafu { id }.build();
+                    let err = ClobberSnafu { id: id.to_owned() }.build();
                     log::error!("{err}");
                     return Err(err);
                 }
@@ -885,10 +919,11 @@ impl<P: 'static> Store<P> {
     }
 
     /// Destroys a resource.
-    pub fn destroy<T>(&mut self, id: &'static str) -> Result<DestroyResource<T>, Error>
+    pub fn destroy<T>(&mut self, id: impl AsRef<str>) -> Result<DestroyResource<T>, Error>
     where
         T: Resource<Provider = P>,
     {
+        let id = id.as_ref();
         let (local, remote) = self.read_file::<T>(id)?;
         let (remote_var, rez, _ty) = self.remotes.dequeue_var::<T::Output>(id, Action::Destroy)?;
         remote_var.set(Some(remote.clone()));
@@ -900,6 +935,7 @@ impl<P: 'static> Store<P> {
                 name: node_name.clone(),
                 _remote_ty: std::any::type_name::<T>(),
                 run: Box::new({
+                    let resource_id = id.to_owned();
                     let store_path = self.path.clone();
                     let local = local.clone();
                     let remote_var = remote_var.clone();
@@ -908,7 +944,7 @@ impl<P: 'static> Store<P> {
                             RunAction {
                                 provider,
                                 store_path,
-                                resource_id: id,
+                                resource_id,
                                 action: Action::Load,
                                 local_definition_code: local,
                                 remote_var,
@@ -945,6 +981,7 @@ impl<P: 'static> Store<P> {
                 name: node_name.clone(),
                 _remote_ty: std::any::type_name::<T>(),
                 run: Box::new({
+                    let resource_id = id.to_owned();
                     let local = local.clone();
                     let store_path = self.path.clone();
                     let remote_var = remote_var.clone();
@@ -953,7 +990,7 @@ impl<P: 'static> Store<P> {
                             RunAction {
                                 provider,
                                 store_path,
-                                resource_id: id,
+                                resource_id,
                                 action: Action::Destroy,
                                 local_definition_code: local,
                                 local_definition_store: None,

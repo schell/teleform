@@ -91,3 +91,5 @@ impl<V: HasDependencies> HasDependencies for Option<V> {
             })
     }
 }
+
+impl HasDependencies for serde_json::Value {}

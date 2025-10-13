@@ -121,7 +121,7 @@ impl<'de, X: serde::Deserialize<'de>> serde::Deserialize<'de> for Remote<X> {
 impl<X: Clone + core::fmt::Debug + 'static> Remote<X> {
     pub(crate) fn new<T: Resource>(
         resource: &StoreResource<T, T::Output>,
-        map: fn(&T::Output) -> X,
+        map: impl Fn(&T::Output) -> X + 'static,
     ) -> Self {
         log::trace!(
             "creating mapping of a remote resource '{}'",
