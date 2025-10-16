@@ -209,7 +209,7 @@ async fn sanity() {
             )
             .unwrap();
         log::warn!("\n");
-        let _service_a = store
+        let service_a = store
             .resource(
                 "test-service-a",
                 LocalService {
@@ -226,6 +226,12 @@ async fn sanity() {
                 },
             )
             .unwrap();
+
+        assert_eq!(
+            service_a.action(),
+            Action::Update,
+            "`service_a` should update in response to `bucket_rez` updating"
+        );
 
         write_graph_pdf(store, "update").await;
         log::info!("running plan: \n{}", store.get_schedule_string().unwrap());

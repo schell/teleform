@@ -166,6 +166,12 @@ pub enum Error {
         error: Box<dyn UserError>,
     },
 
+    #[snafu(display("Error during execution of a manual step '{name}': {error}"))]
+    Manual {
+        name: String,
+        error: Box<dyn UserError>,
+    },
+
     #[snafu(display("Missing previous remote value '{name}'"))]
     Load { name: String },
 
@@ -652,6 +658,11 @@ struct StoreNode<Provider> {
     run: StoreNodeRunFn<Provider>,
 }
 
+struct PreviouslyStored<T: Resource> {
+    action: Action,
+    resource: Option<(T, T::Output)>,
+}
+
 pub struct Store<T> {
     path: std::path::PathBuf,
     provider: T,
@@ -811,6 +822,60 @@ impl<P: 'static> Store<P> {
         })
     }
 
+    /// Read the stored previous definition and determine the action.
+    fn determine_action_from_previously_stored<T>(
+        &self,
+        local_definition: &T,
+        id: &str,
+    ) -> Result<PreviouslyStored<T>, Error>
+    where
+        T: Resource<Provider = P>,
+    {
+        match self.read_file(id) {
+            Ok((stored_definition, output)) => {
+                // This has already been created and stored, so this is either a simple load,
+                // or an update.
+                log::debug!("  {output:?}");
+                let action = if *local_definition != stored_definition {
+                    log::debug!("  local resource has changed, so this remote is now stale");
+                    Action::Update
+                } else {
+                    // Check if any upstream dependencies are "stale" (updated or deleted),
+                    // which would cause this resource to possibly require an update.
+                    let mut may_need_update = false;
+                    for dep in local_definition.dependencies() {
+                        let var = self.remotes.get(&dep).context(LoadSnafu { name: dep })?;
+                        if var.action != Action::Load {
+                            may_need_update = true;
+                            break;
+                        }
+                    }
+                    if may_need_update {
+                        Action::Update
+                    } else {
+                        Action::Load
+                    }
+                };
+
+                Ok(PreviouslyStored {
+                    action,
+                    resource: Some((stored_definition, output)),
+                })
+            }
+            Err(Error::MissingStoreFile { id }) => {
+                log::debug!("store file '{id}' does not exist, creating a new resource",);
+                Ok(PreviouslyStored {
+                    action: Action::Create,
+                    resource: None,
+                })
+            }
+            Err(e) => {
+                log::error!("could not define resource '{id}': {e}");
+                Err(e)
+            }
+        }
+    }
+
     /// Defines a resource.
     ///
     /// Produces two graph nodes:
@@ -831,30 +896,12 @@ impl<P: 'static> Store<P> {
         T: Resource<Provider = P>,
     {
         let id = id.as_ref();
-        let (action, stored_definition, output) = match self.read_file(id) {
-            Ok((stored_definition, output)) => {
-                // This has already been created and stored, so this is either a simple load,
-                // or an update.
-                log::debug!("  {output:?}");
-                let action = if local_definition != stored_definition {
-                    log::debug!("  local resource has changed, so this remote is now stale");
-                    Action::Update
-                } else {
-                    Action::Load
-                };
-
-                (action, Some(stored_definition), Some(output))
-            }
-            Err(Error::MissingStoreFile { id }) => {
-                log::debug!("store file '{id}' does not exist, creating a new resource",);
-                (Action::Create, None, None)
-            }
-            Err(e) => {
-                log::error!("could not define resource '{id}': {e}");
-                return Err(e);
-            }
-        };
-        self.define_resource(id, local_definition, action, stored_definition, output)
+        let PreviouslyStored { action, resource } =
+            self.determine_action_from_previously_stored(&local_definition, id)?;
+        let (local, remote) = resource
+            .map(|(local, remote)| (Some(local), Some(remote)))
+            .unwrap_or_default();
+        self.define_resource(id, local_definition, action, local, remote)
     }
 
     /// Defines a pre-existing resource, importing it from the platform.

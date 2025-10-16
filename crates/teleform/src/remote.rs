@@ -183,7 +183,6 @@ impl<X> HasDependencies for Remote<X> {
 #[derive(Debug)]
 pub(crate) struct RemoteVar<T> {
     depends_on: String,
-    action: Action,
     inner: Arc<Mutex<Option<T>>>,
 }
 
@@ -191,7 +190,6 @@ impl<T> Clone for RemoteVar<T> {
     fn clone(&self) -> Self {
         Self {
             depends_on: self.depends_on.clone(),
-            action: self.action,
             inner: self.inner.clone(),
         }
     }
@@ -210,6 +208,7 @@ impl<T: Clone> RemoteVar<T> {
 pub(crate) struct Var {
     pub(crate) key: usize,
     pub(crate) ty: &'static str,
+    pub(crate) action: Action,
     pub(crate) remote: Box<dyn core::any::Any>,
 }
 
@@ -253,9 +252,9 @@ impl Remotes {
             Var {
                 key: next_k,
                 ty: std::any::type_name::<T>(),
+                action,
                 remote: Box::new(RemoteVar::<T> {
                     depends_on: id.to_owned(),
-                    action,
                     inner: Default::default(),
                 }),
             }

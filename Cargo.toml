@@ -23,7 +23,7 @@ aws-sdk-secretsmanager = "1.88"
 clap = { version = "^4.4", features = ["cargo", "derive", "env"] }
 colored = "2.0"
 data-encoding = "2.4"
-dagga = "0.2.2"
+dagga = "0.2.3"
 env_logger = "0.10"
 log = "0.4"
 pretty_assertions = "1.4"
