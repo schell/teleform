@@ -207,7 +207,13 @@ type Result<T, E = Error> = core::result::Result<T, E>;
 /// Represents a resource created on a platform (ie AWS, Digital Ocean, etc).
 #[allow(unreachable_code)]
 pub trait Resource:
-    Clone + PartialEq + HasDependencies + serde::Serialize + serde::de::DeserializeOwned + 'static
+    core::fmt::Debug
+    + Clone
+    + PartialEq
+    + HasDependencies
+    + serde::Serialize
+    + serde::de::DeserializeOwned
+    + 'static
 {
     /// Type of the platform/resource provider.
     ///
@@ -586,15 +592,30 @@ impl<Provider, T: Resource<Provider = Provider>> RunAction<'_, Provider, T> {
                 let previous_remote = remote_var.get().context(LoadSnafu {
                     name: resource_id.clone(),
                 })?;
-                let output = local_definition_code
-                    .update(provider, &previous_local, &previous_remote)
-                    .await
-                    .map_err(|error| Error::Update {
-                        name: resource_id.clone(),
-                        error: Box::new(error),
-                    })?;
-                remote_var.set(Some(output));
-                save(&resource_id, local_definition_code, &remote_var, store_path).await?;
+                if previous_local == local_definition_code {
+                    log::warn!(
+                        "Skipping '{resource_id}' update as the local value has not changed.\n\
+                        If you require an update, consider adding a sentinel value."
+                    );
+                } else {
+                    let cmp =
+                        pretty_assertions::Comparison::new(&previous_local, &local_definition_code);
+                    let change_string = format!("{cmp}")
+                        .lines()
+                        .map(|line| format!("  {line}"))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    log::info!("updating '{resource_id}':\n{change_string}");
+                    let output = local_definition_code
+                        .update(provider, &previous_local, &previous_remote)
+                        .await
+                        .map_err(|error| Error::Update {
+                            name: resource_id.clone(),
+                            error: Box::new(error),
+                        })?;
+                    remote_var.set(Some(output));
+                    save(&resource_id, local_definition_code, &remote_var, store_path).await?;
+                }
             }
             Action::Destroy => {
                 log::debug!("running destroy action on {resource_id}");

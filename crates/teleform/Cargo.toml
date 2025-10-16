@@ -1,6 +1,6 @@
 [package]
 name = "teleform"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 description = "Teleform is a Rust library for Infrastructure as Code (IaC), providing a flexible alternative to Terraform and Pulumi."
 license = "MIT"
@@ -21,6 +21,7 @@ anyhow.workspace = true
 dagga.workspace = true
 data-encoding.workspace = true
 log.workspace = true
+pretty_assertions.workspace = true
 ring.workspace = true
 serde.workspace = true 
 serde_json.workspace = true
