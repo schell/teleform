@@ -1104,8 +1104,6 @@ impl<P: 'static> Store<P> {
         Ok(DestroyResource { local, remote })
     }
 
-    pub fn after<T: Resource>(&mut self, resource: &StoreResource<T, T::Output>) {}
-
     fn get_graph_legend(&self) -> Result<DagLegend<usize>> {
         let mut missing_resource_creation = None;
         let legend = self.graph.legend()?.with_resources_named(|rez| {
