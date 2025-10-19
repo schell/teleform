@@ -58,9 +58,22 @@ impl<X: std::fmt::Debug> std::fmt::Debug for RemoteInner<X> {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Remote<X> {
     inner: RemoteInner<X>,
+}
+
+impl<X: Clone + core::fmt::Debug + 'static> std::fmt::Debug for Remote<X> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let depends_on = match &self.inner {
+            RemoteInner::Init { depends_on, .. } => depends_on,
+            RemoteInner::Var { depends_on, .. } => depends_on,
+        };
+        f.debug_struct("Remote")
+            .field("depends_on", depends_on)
+            .field("value", &self.get().ok())
+            .finish()
+    }
 }
 
 impl<X: Clone + core::fmt::Debug + PartialEq + 'static> PartialEq for Remote<X> {
@@ -165,6 +178,37 @@ impl<X: Clone + core::fmt::Debug + 'static> Remote<X> {
                 var,
                 depends_on: _,
             } => map(var),
+        }
+    }
+
+    pub fn map<Y>(&self, f: impl Fn(X) -> Y + 'static) -> Remote<Y> {
+        match &self.inner {
+            RemoteInner::Init {
+                depends_on,
+                last_known_value,
+            } => Remote {
+                inner: RemoteInner::Init {
+                    depends_on: depends_on.clone(),
+                    last_known_value: last_known_value.clone().map(f),
+                },
+            },
+            RemoteInner::Var {
+                depends_on,
+                map,
+                var,
+            } => Remote {
+                inner: RemoteInner::Var {
+                    depends_on: depends_on.clone(),
+                    var: var.clone(),
+                    map: Arc::new({
+                        let map = map.clone();
+                        move |any: &Arc<dyn Any>| {
+                            let x = map(any)?;
+                            Ok(f(x))
+                        }
+                    }),
+                },
+            },
         }
     }
 }

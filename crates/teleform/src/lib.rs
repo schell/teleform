@@ -498,6 +498,25 @@ where
     pub fn action(&self) -> Action {
         self.action
     }
+
+    pub fn depends_on<X, Y>(&self, store: &mut Store<T::Provider>, resource: &StoreResource<X, Y>) {
+        let this_var = store.remotes.get(&self.name).unwrap();
+        let that_var = store.remotes.get(&resource.name).unwrap();
+        for node in store.graph.take_nodes() {
+            store.graph.add_node(
+                if node
+                    .get_results()
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .contains(&this_var.key)
+                {
+                    node.with_read(that_var.key)
+                } else {
+                    node
+                },
+            );
+        }
+    }
 }
 
 /// The path to an individual resource store file.
@@ -757,6 +776,11 @@ impl<P: 'static> Store<P> {
         T: Resource<Provider = P>,
     {
         Self::read_from_store(&self.path, id)
+    }
+
+    /// Adds a barrier after which all resources will be run after those defined before.
+    pub fn barrier(&mut self) {
+        self.graph.add_barrier();
     }
 
     fn define_resource<T>(
@@ -1080,6 +1104,8 @@ impl<P: 'static> Store<P> {
         Ok(DestroyResource { local, remote })
     }
 
+    pub fn after<T: Resource>(&mut self, resource: &StoreResource<T, T::Output>) {}
+
     fn get_graph_legend(&self) -> Result<DagLegend<usize>> {
         let mut missing_resource_creation = None;
         let legend = self.graph.legend()?.with_resources_named(|rez| {
@@ -1107,7 +1133,8 @@ impl<P: 'static> Store<P> {
                 .with_name(store_node.name.clone())
                 .with_reads(node.get_reads().copied())
                 .with_results(node.get_results().copied())
-                .with_moves(node.get_moves().copied());
+                .with_moves(node.get_moves().copied())
+                .with_barrier(node.get_barrier());
             dag.add_node(print_node);
         }
         struct Proxy {
