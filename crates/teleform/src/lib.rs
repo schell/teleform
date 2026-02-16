@@ -749,9 +749,11 @@ struct PreviouslyStored<T: Resource> {
 
 /// A type-erased delete function for a specific resource type.
 ///
-/// Constructed by [`Store::register`], this produces a [`StoreNodeRunFn`]
-/// that reads the store file, deserializes it into the concrete type,
-/// calls `T::delete()`, and removes the file.
+/// Constructed automatically when a resource type is first used (via
+/// [`Store::resource`], [`Store::import`], [`Store::load`], or
+/// [`Store::destroy`]), or manually via [`Store::register`]. Produces a
+/// [`StoreNodeRunFn`] that reads the store file, deserializes it into the
+/// concrete type, calls `T::delete()`, and removes the file.
 struct ResourceDeleter<Provider> {
     make_run_fn: Box<
         dyn Fn(
@@ -879,21 +881,23 @@ impl<P: 'static> Store<P> {
         &self.provider
     }
 
-    /// Register a resource type for automatic orphan detection and deletion.
+    /// Ensure a resource type is registered for orphan auto-deletion.
     ///
-    /// When [`Store::plan`] discovers a store file whose `type_name` matches
-    /// this type but no corresponding [`Store::resource`] or
-    /// [`Store::destroy`] call was made, it will schedule the resource for
-    /// automatic deletion.
-    ///
-    /// Call this once per resource type, before calling [`Store::plan`].
-    pub fn register<T>(&mut self) -> &mut Self
+    /// This is called automatically by [`Store::resource`],
+    /// [`Store::import`], [`Store::load`], and [`Store::destroy`], so
+    /// manual calls are only needed for types that are **not** declared in
+    /// the current run but may still have leftover store files from a
+    /// previous apply.
+    fn ensure_registered<T>(&mut self)
     where
         T: Resource<Provider = P>,
     {
-        let type_name = std::any::type_name::<T>().to_owned();
+        let type_name = std::any::type_name::<T>();
+        if self.deleters.contains_key(type_name) {
+            return;
+        }
         self.deleters.insert(
-            type_name,
+            type_name.to_owned(),
             ResourceDeleter {
                 make_run_fn: Box::new(|store_path, resource_id| {
                     Box::new(move |provider: &P| {
@@ -919,6 +923,27 @@ impl<P: 'static> Store<P> {
                 }),
             },
         );
+    }
+
+    /// Register a resource type for automatic orphan detection and deletion.
+    ///
+    /// When [`Store::plan`] discovers a store file whose `type_name` matches
+    /// this type but no corresponding [`Store::resource`] or
+    /// [`Store::destroy`] call was made, it will schedule the resource for
+    /// automatic deletion.
+    ///
+    /// ## Note
+    ///
+    /// Resource types are now **automatically registered** whenever they are
+    /// used via [`Store::resource`], [`Store::import`], [`Store::load`], or
+    /// [`Store::destroy`]. You only need to call this method for resource
+    /// types that are **not** declared in the current run but may still have
+    /// orphaned store files from a previous apply.
+    pub fn register<T>(&mut self) -> &mut Self
+    where
+        T: Resource<Provider = P>,
+    {
+        self.ensure_registered::<T>();
         self
     }
 
@@ -945,6 +970,7 @@ impl<P: 'static> Store<P> {
     where
         T: Resource<Provider = P>,
     {
+        self.ensure_registered::<T>();
         let id = id.as_ref();
         let (remote_var, rez, _ty) = self.remotes.dequeue_var::<T::Output>(id, action)?;
         remote_var.set(output);
@@ -1166,6 +1192,7 @@ impl<P: 'static> Store<P> {
     where
         T: Resource<Provider = P>,
     {
+        self.ensure_registered::<T>();
         let id = id.as_ref();
         let (local, remote) = self.read_file::<T>(id)?;
         let (remote_var, rez, _ty) = self.remotes.dequeue_var::<T::Output>(id, Action::Destroy)?;
@@ -1456,16 +1483,19 @@ impl<P: 'static> Store<P> {
                     }
                 }
 
-                // Can't auto-delete: warn
+                // Can't auto-delete: the resource type wasn't used in this run
+                // and wasn't manually registered, so we don't have a deleter.
                 let msg = match &type_name {
                     Some(tn) => format!(
-                        "Orphaned resource '{file_stem}' (type: {tn}) has no registered \
-                        deleter. Call `store.register::<{tn}>()` or use `store.destroy()` \
-                        explicitly."
+                        "Orphaned resource '{file_stem}' (type: {tn}) found in the store \
+                        directory but its type is not known to this run. Call \
+                        `store.register::<{tn}>()` to enable automatic deletion, or use \
+                        `store.destroy::<{tn}>(\"{file_stem}\")` to delete it explicitly."
                     ),
                     None => format!(
-                        "Orphaned resource '{file_stem}' has no type_name in its store \
-                        file. Use `store.destroy()` explicitly to remove it."
+                        "Orphaned resource '{file_stem}' found in the store directory but \
+                        its store file has no type_name. Use \
+                        `store.destroy(\"{file_stem}\")` to delete it explicitly."
                     ),
                 };
                 log::warn!("{msg}");

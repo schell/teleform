@@ -319,9 +319,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     let mut store = Store::new(&cli.state_dir, cli.infra_dir.clone());
-    store.register::<Bucket>();
-    store.register::<HtmlPage>();
-    store.register::<DeployManifest>();
 
     match cli.command {
         Command::Plan => {
@@ -341,7 +338,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Destroy => {
             // Destroy in reverse dependency order: manifest, page, bucket.
             // Resources with no active `resource()` call will be detected as
-            // orphans and auto-deleted thanks to `store.register()` above.
+            // orphans and auto-deleted (resource types are registered
+            // automatically when first used via `store.resource()`).
             let plan = store.plan()?;
             print_plan(&plan);
             println!();

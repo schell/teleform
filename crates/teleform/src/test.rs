@@ -338,3 +338,124 @@ async fn sanity() {
     backup("destroy").await;
     log::warn!("\n");
 }
+
+/// Verify that resource types are automatically registered for orphan
+/// auto-deletion when used via [`Store::resource`], without any explicit
+/// [`Store::register`] call.
+#[tokio::test]
+async fn auto_register_orphan_delete() {
+    let _ = env_logger::builder().try_init();
+
+    let path =
+        std::path::PathBuf::from(std::env!("CARGO_WORKSPACE_DIR")).join("test_output/auto_reg");
+    if path.exists() {
+        tokio::fs::remove_dir_all(&path).await.unwrap();
+    }
+    tokio::fs::create_dir_all(&path).await.unwrap();
+
+    // Step 1: Create two buckets.
+    let mut store = Store::new(&path, ());
+    let _a = store
+        .resource(
+            "bucket-a",
+            LocalBucket {
+                name: "alpha".to_owned(),
+            },
+        )
+        .unwrap();
+    let _b = store
+        .resource(
+            "bucket-b",
+            LocalBucket {
+                name: "beta".to_owned(),
+            },
+        )
+        .unwrap();
+    let plan = store.plan().unwrap();
+    assert!(plan.warnings.is_empty(), "no warnings on first apply");
+    store.apply(plan).await.unwrap();
+
+    // Both store files should exist.
+    assert!(path.join("bucket-a.json").exists());
+    assert!(path.join("bucket-b.json").exists());
+
+    // Step 2: New store that only declares bucket-a.
+    // bucket-b should be auto-detected as an orphan and scheduled for
+    // deletion because LocalBucket was auto-registered via the
+    // `store.resource()` call for bucket-a — no explicit `register()`.
+    let mut store = Store::new(&path, ());
+    let _a = store
+        .resource(
+            "bucket-a",
+            LocalBucket {
+                name: "alpha".to_owned(),
+            },
+        )
+        .unwrap();
+    let plan = store.plan().unwrap();
+    assert!(
+        plan.warnings.is_empty(),
+        "no warnings expected: {:#?}",
+        plan.warnings
+    );
+    let orphan = plan
+        .actions
+        .iter()
+        .find(|a| a.id == "bucket-b")
+        .expect("bucket-b should appear in the plan");
+    assert_eq!(orphan.action, Action::Destroy);
+    assert!(orphan.is_orphan);
+    store.apply(plan).await.unwrap();
+
+    // bucket-b store file should be gone.
+    assert!(!path.join("bucket-b.json").exists());
+    // bucket-a should still be there.
+    assert!(path.join("bucket-a.json").exists());
+}
+
+/// Verify that orphaned resources of an unknown type (not used in the
+/// current run and not manually registered) produce a warning suggesting
+/// `store.register()`.
+#[tokio::test]
+async fn unknown_orphan_warning() {
+    let _ = env_logger::builder().try_init();
+
+    let path = std::path::PathBuf::from(std::env!("CARGO_WORKSPACE_DIR"))
+        .join("test_output/unknown_orphan");
+    if path.exists() {
+        tokio::fs::remove_dir_all(&path).await.unwrap();
+    }
+    tokio::fs::create_dir_all(&path).await.unwrap();
+
+    // Step 1: Create a bucket so there's a store file on disk.
+    let mut store = Store::new(&path, ());
+    let _bucket = store
+        .resource(
+            "my-bucket",
+            LocalBucket {
+                name: "lonely".to_owned(),
+            },
+        )
+        .unwrap();
+    let plan = store.plan().unwrap();
+    store.apply(plan).await.unwrap();
+    assert!(path.join("my-bucket.json").exists());
+
+    // Step 2: New store that declares NO resources at all.
+    // The bucket's type was never used in this run, so there's no deleter.
+    // plan() should produce a warning.
+    let mut store = Store::new(&path, ());
+    let plan = store.plan().unwrap();
+    assert_eq!(plan.warnings.len(), 1, "expected exactly one warning");
+    assert!(
+        plan.warnings[0].contains("my-bucket"),
+        "warning should mention the orphan id"
+    );
+    assert!(
+        plan.warnings[0].contains("register"),
+        "warning should suggest register()"
+    );
+
+    // The store file should still exist (not auto-deleted).
+    assert!(path.join("my-bucket.json").exists());
+}
