@@ -8,3 +8,5 @@ store.json
 default_store.json
 infrastructure.json
 test_output
+infra
+state

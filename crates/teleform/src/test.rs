@@ -161,7 +161,8 @@ async fn sanity() {
 
         write_graph_pdf(store, step).await;
         log::info!("running plan: \n{}", store.get_schedule_string().unwrap());
-        store.apply().await.unwrap();
+        let plan = store.plan().unwrap();
+        store.apply(plan).await.unwrap();
     }
 
     async fn backup(suffix: &str) {
@@ -244,7 +245,8 @@ async fn sanity() {
             "update should be scheduled into 2 batches: \
             1 update in one batch and 2 loads in another"
         );
-        store.apply().await.unwrap();
+        let plan = store.plan().unwrap();
+        store.apply(plan).await.unwrap();
     }
     run_update(&mut store).await;
     backup("update").await;
@@ -329,7 +331,8 @@ async fn sanity() {
             .unwrap();
         write_graph_pdf(store, "destroy").await;
         log::info!("running plan: \n{}", store.get_schedule_string().unwrap());
-        store.apply().await.unwrap();
+        let plan = store.plan().unwrap();
+        store.apply(plan).await.unwrap();
     }
     run_migration(&mut store).await;
     backup("destroy").await;

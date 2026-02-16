@@ -186,6 +186,12 @@ pub enum Error {
 
     #[snafu(display("Missing store file for '{id}'"))]
     MissingStoreFile { id: String },
+
+    #[snafu(display("Could not scan store directory '{path:?}': {source}"))]
+    ScanStoreDir {
+        path: std::path::PathBuf,
+        source: std::io::Error,
+    },
 }
 
 impl From<anyhow::Error> for Error {
@@ -397,6 +403,14 @@ struct InertStoreResource {
     name: String,
     local: serde_json::Value,
     remote: serde_json::Value,
+    /// The Rust type name of the resource (via `std::any::type_name::<T>()`).
+    /// Used for orphan detection and auto-deletion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    type_name: Option<String>,
+    /// The resource IDs this resource depends on.
+    /// Used for ordering orphan deletions correctly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    dependencies: Option<Vec<String>>,
 }
 
 impl InertStoreResource {
@@ -474,6 +488,8 @@ where
             name: value.name,
             local,
             remote,
+            type_name: None,
+            dependencies: None,
         })
     }
 }
@@ -524,6 +540,31 @@ fn store_file_path(name: &str, store_path: impl AsRef<std::path::Path>) -> std::
     store_path.as_ref().join(format!("{name}.json"))
 }
 
+/// Extract `depends_on` resource IDs from a serialized local definition.
+///
+/// Walks the JSON tree looking for `{"depends_on": "..."}` patterns,
+/// which is how [`Remote`] serializes via `RemoteProxy`.
+fn extract_depends_on_from_json(value: &serde_json::Value) -> Vec<String> {
+    let mut deps = Vec::new();
+    match value {
+        serde_json::Value::Object(map) => {
+            if let Some(serde_json::Value::String(dep)) = map.get("depends_on") {
+                deps.push(dep.clone());
+            }
+            for v in map.values() {
+                deps.extend(extract_depends_on_from_json(v));
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for v in arr {
+                deps.extend(extract_depends_on_from_json(v));
+            }
+        }
+        _ => {}
+    }
+    deps
+}
+
 type StoreNodeRunFn<Provider> = Box<
     dyn FnOnce(
         // Resource platform provider
@@ -564,9 +605,10 @@ impl<Provider, T: Resource<Provider = Provider>> RunAction<'_, Provider, T> {
             remote_var: &RemoteVar<T::Output>,
             store_path: impl AsRef<std::path::Path>,
         ) -> Result<(), Error> {
+            let deps: Vec<String> = local_definition_code.dependencies().into_iter().collect();
             let inert_resource = InertStoreResource {
                 name: resource_id.to_owned(),
-                local: serde_json::to_value(local_definition_code).context(SerializeSnafu {
+                local: serde_json::to_value(&local_definition_code).context(SerializeSnafu {
                     name: format!("store {resource_id}"),
                 })?,
                 remote: serde_json::to_value(
@@ -575,6 +617,8 @@ impl<Provider, T: Resource<Provider = Provider>> RunAction<'_, Provider, T> {
                 .context(SerializeSnafu {
                     name: format!("store {resource_id} remote"),
                 })?,
+                type_name: Some(std::any::type_name::<T>().to_owned()),
+                dependencies: if deps.is_empty() { None } else { Some(deps) },
             };
             inert_resource.save(resource_id, store_path).await?;
             Ok(())
@@ -703,11 +747,74 @@ struct PreviouslyStored<T: Resource> {
     resource: Option<(T, T::Output)>,
 }
 
+/// A type-erased delete function for a specific resource type.
+///
+/// Constructed by [`Store::register`], this produces a [`StoreNodeRunFn`]
+/// that reads the store file, deserializes it into the concrete type,
+/// calls `T::delete()`, and removes the file.
+struct ResourceDeleter<Provider> {
+    make_run_fn: Box<
+        dyn Fn(
+            std::path::PathBuf, // store_path
+            String,             // resource_id
+        ) -> StoreNodeRunFn<Provider>,
+    >,
+}
+
+/// A single planned action for a resource.
+#[derive(Clone, Debug)]
+pub struct PlannedAction {
+    /// The resource ID.
+    pub id: String,
+    /// The action to be taken.
+    pub action: Action,
+    /// The Rust type name, if known.
+    pub type_name: Option<String>,
+    /// Whether this is an auto-detected orphan.
+    pub is_orphan: bool,
+}
+
+/// A plan of actions produced by [`Store::plan`].
+///
+/// Inspect the plan before passing it to [`Store::apply`] to execute.
+pub struct Plan<Provider> {
+    /// The planned actions, in no particular order.
+    pub actions: Vec<PlannedAction>,
+    /// Resources that appear orphaned but could not be auto-deleted
+    /// (unregistered type or missing `type_name` in store file).
+    pub warnings: Vec<String>,
+    /// Internal: the built schedule.
+    schedule: Schedule<Node<StoreNode<Provider>, usize>>,
+}
+
+impl<Provider> core::fmt::Display for Plan<Provider> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.actions.is_empty() {
+            f.write_str("No changes.\n")?;
+            return Ok(());
+        }
+        for action in &self.actions {
+            let orphan_marker = if action.is_orphan { " (orphan)" } else { "" };
+            let ty = action.type_name.as_deref().unwrap_or("unknown");
+            writeln!(
+                f,
+                "  {} '{}' [{}]{}",
+                action.action, action.id, ty, orphan_marker
+            )?;
+        }
+        for warning in &self.warnings {
+            writeln!(f, "  WARNING: {warning}")?;
+        }
+        Ok(())
+    }
+}
+
 pub struct Store<T> {
     path: std::path::PathBuf,
     provider: T,
     remotes: Remotes,
     graph: dagga::Dag<StoreNode<T>, usize>,
+    deleters: std::collections::HashMap<String, ResourceDeleter<T>>,
 }
 
 impl<P: 'static> Store<P> {
@@ -764,11 +871,55 @@ impl<P: 'static> Store<P> {
             graph: dagga::Dag::default(),
             remotes: Default::default(),
             provider,
+            deleters: Default::default(),
         }
     }
 
     pub fn provider(&self) -> &P {
         &self.provider
+    }
+
+    /// Register a resource type for automatic orphan detection and deletion.
+    ///
+    /// When [`Store::plan`] discovers a store file whose `type_name` matches
+    /// this type but no corresponding [`Store::resource`] or
+    /// [`Store::destroy`] call was made, it will schedule the resource for
+    /// automatic deletion.
+    ///
+    /// Call this once per resource type, before calling [`Store::plan`].
+    pub fn register<T>(&mut self) -> &mut Self
+    where
+        T: Resource<Provider = P>,
+    {
+        let type_name = std::any::type_name::<T>().to_owned();
+        self.deleters.insert(
+            type_name,
+            ResourceDeleter {
+                make_run_fn: Box::new(|store_path, resource_id| {
+                    Box::new(move |provider: &P| {
+                        Box::pin(async move {
+                            let (local, remote): (T, T::Output) =
+                                Self::read_from_store(&store_path, &resource_id)?;
+                            log::info!("destroy '{resource_id}' (orphan auto-delete):");
+                            local.delete(provider, &remote).await.map_err(|error| {
+                                Error::Destroy {
+                                    name: resource_id.clone(),
+                                    error: Box::new(error),
+                                }
+                            })?;
+                            let path = store_file_path(&resource_id, &store_path);
+                            log::info!("  removing {resource_id} store file {path:?}");
+                            tokio::fs::remove_file(&path)
+                                .await
+                                .context(StoreFileDeleteSnafu { path })?;
+                            log::info!("  {resource_id} destroyed");
+                            Ok(())
+                        }) as Pin<Box<dyn Future<Output = Result<()>> + '_>>
+                    })
+                }),
+            },
+        );
+        self
     }
 
     fn read_file<T>(&self, id: &str) -> Result<(T, T::Output), Error>
@@ -1176,12 +1327,192 @@ impl<P: 'static> Store<P> {
         Ok(())
     }
 
-    pub async fn apply(&mut self) -> Result<()> {
+    /// Scan the store directory and build an execution plan.
+    ///
+    /// Compares declared resources (from [`Store::resource`],
+    /// [`Store::destroy`], etc.) against store files on disk. Resources
+    /// found on disk but not declared are flagged as orphans.
+    ///
+    /// Orphans whose types are registered via [`Store::register`] are
+    /// automatically scheduled for deletion. Unregistered orphans produce
+    /// warnings.
+    pub fn plan(&mut self) -> Result<Plan<P>> {
+        let mut actions = Vec::new();
+        let mut warnings = Vec::new();
+
+        // Collect declared resource IDs
+        let declared_ids = self.remotes.declared_ids();
+
+        // Collect actions for declared resources
+        for (id, var) in self.remotes.iter() {
+            actions.push(PlannedAction {
+                id: id.clone(),
+                action: var.action,
+                type_name: Some(var.ty.to_owned()),
+                is_orphan: false,
+            });
+        }
+
+        // Scan the store directory for .json files to detect orphans
+        let store_dir = &self.path;
+        if store_dir.exists() {
+            let entries = std::fs::read_dir(store_dir).context(ScanStoreDirSnafu {
+                path: store_dir.clone(),
+            })?;
+
+            for entry in entries {
+                let entry = entry.context(ScanStoreDirSnafu {
+                    path: store_dir.clone(),
+                })?;
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                    continue;
+                }
+                let file_stem = match path.file_stem().and_then(|s| s.to_str()) {
+                    Some(s) => s.to_owned(),
+                    None => continue,
+                };
+
+                if declared_ids.contains(&file_stem) {
+                    continue; // Not an orphan
+                }
+
+                // This is an orphan — read its metadata
+                let contents =
+                    std::fs::read_to_string(&path).context(StoreFileReadSnafu { path: &path })?;
+                let inert: InertStoreResource =
+                    serde_json::from_str(&contents).context(DeserializeSnafu {
+                        name: file_stem.clone(),
+                    })?;
+
+                let type_name = inert.type_name.clone();
+
+                if let Some(ref tn) = type_name {
+                    if let Some(deleter) = self.deleters.get(tn) {
+                        log::info!(
+                            "orphan detected: '{file_stem}' (type: {tn}), scheduling auto-delete"
+                        );
+
+                        // Register orphan in remotes so the DAG can track it
+                        let (remote_var, rez, _ty) = self
+                            .remotes
+                            .dequeue_var::<serde_json::Value>(&file_stem, Action::Destroy)?;
+                        remote_var.set(Some(inert.remote.clone()));
+
+                        // Resolve dependency keys for correct ordering.
+                        // Use the explicit dependencies field if available,
+                        // otherwise fall back to parsing depends_on from JSON.
+                        let stored_deps = inert
+                            .dependencies
+                            .as_ref()
+                            .cloned()
+                            .unwrap_or_else(|| extract_depends_on_from_json(&inert.local));
+                        let dep_keys: Vec<usize> = stored_deps
+                            .iter()
+                            .filter_map(|dep| self.remotes.get(dep).map(|v| v.key))
+                            .collect();
+
+                        // Add a load node to introduce the resource into the DAG
+                        let load_node_name = format!("load {file_stem}");
+                        let load_node = dagga::Node::new(StoreNode {
+                            name: load_node_name.clone(),
+                            _remote_ty: "orphan",
+                            run: Box::new({
+                                let resource_id = file_stem.clone();
+                                move |_provider: &P| {
+                                    Box::pin(async move {
+                                        log::debug!("loading orphan '{resource_id}' for deletion");
+                                        Ok(())
+                                    })
+                                        as Pin<Box<dyn Future<Output = Result<()>> + '_>>
+                                }
+                            }),
+                        })
+                        .with_name(load_node_name)
+                        .with_reads(dep_keys)
+                        .with_result(rez);
+                        self.graph.add_node(load_node);
+
+                        // Add the destroy node using the registered deleter
+                        let destroy_node_name = format!("destroy {file_stem}");
+                        let run_fn = (deleter.make_run_fn)(self.path.clone(), file_stem.clone());
+                        let destroy_node = dagga::Node::new(StoreNode {
+                            name: destroy_node_name.clone(),
+                            _remote_ty: "orphan",
+                            run: run_fn,
+                        })
+                        .with_name(destroy_node_name)
+                        .with_move(rez);
+                        self.graph.add_node(destroy_node);
+
+                        actions.push(PlannedAction {
+                            id: file_stem,
+                            action: Action::Destroy,
+                            type_name: type_name.clone(),
+                            is_orphan: true,
+                        });
+
+                        continue;
+                    }
+                }
+
+                // Can't auto-delete: warn
+                let msg = match &type_name {
+                    Some(tn) => format!(
+                        "Orphaned resource '{file_stem}' (type: {tn}) has no registered \
+                        deleter. Call `store.register::<{tn}>()` or use `store.destroy()` \
+                        explicitly."
+                    ),
+                    None => format!(
+                        "Orphaned resource '{file_stem}' has no type_name in its store \
+                        file. Use `store.destroy()` explicitly to remove it."
+                    ),
+                };
+                log::warn!("{msg}");
+                warnings.push(msg);
+            }
+        }
+
+        // Build the schedule from the DAG
         let graph = std::mem::take(&mut self.graph);
         let schedule = graph
             .build_schedule()
             .map_err(|e| Error::Schedule { msg: e.to_string() })?;
-        for (i, batch) in schedule.batches.into_iter().enumerate() {
+
+        // Reorder actions to match the schedule's execution order.
+        // Node names are "{action} {id}" (e.g. "create bucket"). We extract
+        // the resource ID and use the first occurrence in schedule order as
+        // the canonical position for that action.
+        let mut ordered_actions = Vec::with_capacity(actions.len());
+        let mut seen = std::collections::HashSet::new();
+        for batch in &schedule.batches {
+            for node in batch {
+                let id = node
+                    .name()
+                    .split_once(' ')
+                    .map(|(_, id)| id)
+                    .unwrap_or(node.name());
+                if seen.insert(id.to_owned()) {
+                    if let Some(pos) = actions.iter().position(|a| a.id == id) {
+                        ordered_actions.push(actions.swap_remove(pos));
+                    }
+                }
+            }
+        }
+        // Append any remaining actions not found in the schedule
+        ordered_actions.extend(actions);
+        let actions = ordered_actions;
+
+        Ok(Plan {
+            actions,
+            warnings,
+            schedule,
+        })
+    }
+
+    /// Execute a plan previously built by [`Store::plan`].
+    pub async fn apply(&mut self, plan: Plan<P>) -> Result<()> {
+        for (i, batch) in plan.schedule.batches.into_iter().enumerate() {
             for (j, node) in batch.into_iter().enumerate() {
                 log::debug!("applying node {j}, batch {i}");
                 let store_node = node.into_inner();
@@ -1189,5 +1520,21 @@ impl<P: 'static> Store<P> {
             }
         }
         Ok(())
+    }
+
+    /// Acknowledge an orphaned resource and prepare it for migration.
+    ///
+    /// Use this when removing a resource that other resources still depend
+    /// on. The returned [`DestroyResource`] provides
+    /// [`DestroyResource::migrate`] for extracting values into
+    /// [`Migrated`](remote::Migrated) fields on other resources.
+    ///
+    /// This has the same effect as [`Store::destroy`] but communicates the
+    /// intent of handling an orphan in a plan/apply workflow.
+    pub fn pending_destroy<T>(&mut self, id: impl AsRef<str>) -> Result<DestroyResource<T>, Error>
+    where
+        T: Resource<Provider = P>,
+    {
+        self.destroy(id)
     }
 }

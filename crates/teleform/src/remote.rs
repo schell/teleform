@@ -321,6 +321,16 @@ impl Remotes {
     pub fn get(&self, id: &str) -> Option<&Var> {
         self.vars.get(id)
     }
+
+    /// Returns the set of all declared resource IDs.
+    pub fn declared_ids(&self) -> std::collections::HashSet<String> {
+        self.vars.keys().cloned().collect()
+    }
+
+    /// Iterate over all declared resources.
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &Var)> {
+        self.vars.iter()
+    }
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]

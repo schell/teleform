@@ -3,6 +3,7 @@
 members = [
     "crates/teleform",
     "crates/teleform-derive",
+    "crates/teleform-example",
 ]
 
 resolver = "2"
