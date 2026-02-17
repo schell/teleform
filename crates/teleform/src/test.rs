@@ -459,3 +459,66 @@ async fn unknown_orphan_warning() {
     // The store file should still exist (not auto-deleted).
     assert!(path.join("my-bucket.json").exists());
 }
+
+/// Verify that [`Store::clear_resources`] forgets declared resources but
+/// preserves the type registry, enabling a "destroy everything" workflow.
+#[tokio::test]
+async fn clear_and_destroy_all() {
+    let _ = env_logger::builder().try_init();
+
+    let path = std::path::PathBuf::from(std::env!("CARGO_WORKSPACE_DIR"))
+        .join("test_output/clear_destroy");
+    if path.exists() {
+        tokio::fs::remove_dir_all(&path).await.unwrap();
+    }
+    tokio::fs::create_dir_all(&path).await.unwrap();
+
+    // Step 1: Create a bucket and a service.
+    let mut store = Store::new(&path, ());
+    let bucket = store
+        .resource(
+            "bucket",
+            LocalBucket {
+                name: "data".to_owned(),
+            },
+        )
+        .unwrap();
+    let _service = store
+        .resource(
+            "service",
+            LocalService {
+                bucket_arn: bucket.remote(|b| b.arn),
+            },
+        )
+        .unwrap();
+    let plan = store.plan().unwrap();
+    store.apply(plan).await.unwrap();
+    assert!(path.join("bucket.json").exists());
+    assert!(path.join("service.json").exists());
+
+    // Step 2: Same store instance — clear resources then plan.
+    // Types are still registered from the resource() calls above, so
+    // plan() should schedule both as orphan destroys with no warnings.
+    store.clear_resources();
+    let plan = store.plan().unwrap();
+    assert!(
+        plan.warnings.is_empty(),
+        "no warnings: {:#?}",
+        plan.warnings
+    );
+    assert_eq!(
+        plan.actions.len(),
+        2,
+        "expected 2 destroy actions, got: {:#?}",
+        plan.actions,
+    );
+    for action in &plan.actions {
+        assert_eq!(action.action, Action::Destroy);
+        assert!(action.is_orphan);
+    }
+    store.apply(plan).await.unwrap();
+
+    // Both store files should be gone.
+    assert!(!path.join("bucket.json").exists());
+    assert!(!path.join("service.json").exists());
+}

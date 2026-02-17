@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
 use tele::remote::Remote;
-use tele::{Action, HasDependencies, Plan, PlannedAction, Resource, Store};
+use tele::{HasDependencies, Plan, Resource, Store};
 
 // ---------------------------------------------------------------------------
 // CLI
@@ -52,7 +52,10 @@ enum Command {
     /// Plan and apply infrastructure changes.
     Apply,
     /// Tear down all infrastructure.
-    Destroy,
+    Destroy {
+        #[clap(long, short, default_value = "false")]
+        force: bool,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -282,31 +285,7 @@ fn declare_infra(
 }
 
 fn print_plan(plan: &Plan<PathBuf>) {
-    println!("Plan:");
-    if plan.actions.is_empty() {
-        println!("  No changes.");
-    } else {
-        for PlannedAction {
-            id,
-            action,
-            is_orphan,
-            ..
-        } in &plan.actions
-        {
-            let marker = if *is_orphan { " (orphan)" } else { "" };
-            let symbol = match action {
-                Action::Create => "+",
-                Action::Update => "~",
-                Action::Destroy => "-",
-                Action::Load => " ",
-                Action::Read => "?",
-            };
-            println!("  {symbol} {action} '{id}'{marker}");
-        }
-    }
-    for w in &plan.warnings {
-        println!("  WARNING: {w}");
-    }
+    println!("Plan: {plan}");
 }
 
 // ---------------------------------------------------------------------------
@@ -319,35 +298,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     let mut store = Store::new(&cli.state_dir, cli.infra_dir.clone());
+    declare_infra(&mut store, &cli.site_name, &cli.title)?;
+    let plan = store.plan()?;
 
     match cli.command {
         Command::Plan => {
-            declare_infra(&mut store, &cli.site_name, &cli.title)?;
-            let plan = store.plan()?;
-            print_plan(&plan);
+            println!("Plan: {plan}");
         }
         Command::Apply => {
-            declare_infra(&mut store, &cli.site_name, &cli.title)?;
-            let plan = store.plan()?;
-            print_plan(&plan);
+            println!("Plan: {plan}");
             println!();
             println!("Applying...");
             store.apply(plan).await?;
             println!("Done.");
         }
-        Command::Destroy => {
+        Command::Destroy { force } => {
             // Destroy in reverse dependency order: manifest, page, bucket.
             // Resources with no active `resource()` call will be detected as
             // orphans and auto-deleted (resource types are registered
             // automatically when first used via `store.resource()`).
+            store.clear_resources();
             let plan = store.plan()?;
             print_plan(&plan);
-            println!();
-            println!("Applying...");
-            store.apply(plan).await?;
-            println!("Done.");
+            if force {
+                println!();
+                println!("Applying...");
+                store.apply(plan).await?;
+                println!("Done.");
+            } else {
+                println!();
+                println!("Please call `destroy --force` to delete these resources.");
+            }
         }
     }
-
     Ok(())
 }

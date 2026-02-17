@@ -379,10 +379,23 @@ pub trait HasDependencies {
 /// `Destroy` moves the resource out of the graph.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Action {
+    /// No-op: the resource definition has not changed and no upstream
+    /// dependencies are stale. The existing store file is re-saved as-is
+    /// without making any platform calls.
     Load,
+    /// Provision a new resource on the platform via [`Resource::create`].
+    /// Assigned when no store file exists for the resource ID.
     Create,
+    /// Fetch the current remote state from the platform via
+    /// [`Resource::read`] without creating or modifying it. Used by
+    /// [`Store::import`] to record a pre-existing platform resource.
     Read,
+    /// Re-provision the resource via [`Resource::update`] because the local
+    /// definition changed or an upstream dependency is stale.
     Update,
+    /// Remove the resource from the platform via [`Resource::delete`] and
+    /// delete its store file. Used by [`Store::destroy`] and for orphan
+    /// auto-deletion.
     Destroy,
 }
 
@@ -789,6 +802,16 @@ pub struct Plan<Provider> {
     schedule: Schedule<Node<StoreNode<Provider>, usize>>,
 }
 
+impl<Provider> Default for Plan<Provider> {
+    fn default() -> Self {
+        Self {
+            actions: Default::default(),
+            warnings: Default::default(),
+            schedule: Schedule { batches: vec![] },
+        }
+    }
+}
+
 impl<Provider> core::fmt::Display for Plan<Provider> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.actions.is_empty() {
@@ -796,12 +819,23 @@ impl<Provider> core::fmt::Display for Plan<Provider> {
             return Ok(());
         }
         for action in &self.actions {
-            let orphan_marker = if action.is_orphan { " (orphan)" } else { "" };
             let ty = action.type_name.as_deref().unwrap_or("unknown");
+            let orphan_marker = if action.is_orphan {
+                format!(" {ty}(orphan)")
+            } else {
+                String::new()
+            };
+            let symbol = match action.action {
+                Action::Create => "+",
+                Action::Update => "~",
+                Action::Destroy => "-",
+                Action::Load => " ",
+                Action::Read => "?",
+            };
             writeln!(
                 f,
-                "  {} '{}' [{}]{}",
-                action.action, action.id, ty, orphan_marker
+                "  {symbol} {} '{}'{}",
+                action.action, action.id, orphan_marker
             )?;
         }
         for warning in &self.warnings {
@@ -945,6 +979,28 @@ impl<P: 'static> Store<P> {
     {
         self.ensure_registered::<T>();
         self
+    }
+
+    /// Clear all declared resources from internal memory without clearing
+    /// the type registry.
+    ///
+    /// After this call, [`Store::plan`] will see no declared resources and
+    /// will treat every store file on disk as an orphan. Because the type
+    /// registry ([`Store::register`] / auto-registration) is preserved,
+    /// orphaned resources whose types are known will be scheduled for
+    /// automatic deletion.
+    ///
+    /// This is useful for a "destroy everything" workflow:
+    ///
+    /// ```ignore
+    /// declare_infra(&mut store)?;   // registers types via resource()
+    /// store.clear_resources();       // forget declarations, keep types
+    /// let plan = store.plan()?;      // all stored resources become orphans
+    /// store.apply(plan).await?;      // delete everything
+    /// ```
+    pub fn clear_resources(&mut self) {
+        self.remotes = Remotes::default();
+        self.graph = Default::default();
     }
 
     fn read_file<T>(&self, id: &str) -> Result<(T, T::Output), Error>
