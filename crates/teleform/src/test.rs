@@ -522,3 +522,46 @@ async fn clear_and_destroy_all() {
     assert!(!path.join("bucket.json").exists());
     assert!(!path.join("service.json").exists());
 }
+
+/// Verify that [`Store::get`] can read back a previously saved resource.
+#[tokio::test]
+async fn store_get() {
+    let _ = env_logger::builder().try_init();
+
+    let path =
+        std::path::PathBuf::from(std::env!("CARGO_WORKSPACE_DIR")).join("test_output/store_get");
+    if path.exists() {
+        tokio::fs::remove_dir_all(&path).await.unwrap();
+    }
+    tokio::fs::create_dir_all(&path).await.unwrap();
+
+    let local = LocalBucket {
+        name: "my-bucket".to_owned(),
+    };
+
+    // Create the resource and persist it to disk.
+    let mut store = Store::new(&path, ());
+    store.resource("bucket", local.clone()).unwrap();
+    let plan = store.plan().unwrap();
+    store.apply(plan).await.unwrap();
+
+    // Read it back via `get`.
+    let (stored_local, stored_remote): (LocalBucket, RemoteBucket) = store.get("bucket").unwrap();
+    assert_eq!(stored_local, local);
+    // The mock create() encodes the name bytes into the arn.
+    let mut expected_arn = [0u8; 8];
+    for (slot, c) in expected_arn.iter_mut().zip("my-bucket".chars()) {
+        *slot = u32::from(c) as u8;
+    }
+    assert_eq!(stored_remote.arn, expected_arn);
+
+    // A fresh store (same path) can also read it.
+    let fresh_store: Store<()> = Store::new(&path, ());
+    let (fresh_local, fresh_remote): (LocalBucket, RemoteBucket) =
+        fresh_store.get("bucket").unwrap();
+    assert_eq!(fresh_local, local);
+    assert_eq!(fresh_remote.arn, expected_arn);
+
+    // Reading a non-existent ID returns an error.
+    assert!(fresh_store.get::<LocalBucket>("nonexistent").is_err());
+}

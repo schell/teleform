@@ -1010,6 +1010,19 @@ impl<P: 'static> Store<P> {
         Self::read_from_store(&self.path, id)
     }
 
+    /// Read a previously saved resource from the store, returning the stored
+    /// local definition and remote output.
+    ///
+    /// ## Errors
+    /// Returns an error if the store file for `id` does not exist or if
+    /// deserialization fails.
+    pub fn get<T>(&self, id: impl AsRef<str>) -> Result<(T, T::Output)>
+    where
+        T: Resource<Provider = P>,
+    {
+        Self::read_from_store(&self.path, id.as_ref())
+    }
+
     /// Adds a barrier after which all resources will be run after those defined before.
     pub fn barrier(&mut self) {
         self.graph.add_barrier();
